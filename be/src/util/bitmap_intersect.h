@@ -143,6 +143,17 @@ public:
         return result.cardinality();
     }
 
+    BitmapValue intersect() const {
+		BitmapValue result;
+        auto it = _bitmaps.begin();
+        result |= it->second;
+        it++;
+        for (; it != _bitmaps.end(); it++) {
+            result &= it->second;
+        }
+        return result;
+    }
+
     // the serialize size
     size_t size() {
         size_t size = 4;

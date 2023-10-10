@@ -69,3 +69,5 @@ select bitmap_to_string(bitmap_subset_in_range(v1, 3, 2)) from test_bitmap_table
 select bitmap_to_string(bitmap_subset_in_range(v1, 2, 3)) from test_bitmap_table1 order by k1;
 select bitmap_to_string(bitmap_subset_in_range(v1, -2, 3)) from test_bitmap_table1 order by k1;
 
+select bitmap_to_string(orthogonal_bitmap_intersect(`v1`, `k1`, 1, 2)) from test_bitmap_table1;
+select bitmap_to_string(orthogonal_bitmap_intersect(`v1`, `k1`, 2, 3)) from test_bitmap_table1;

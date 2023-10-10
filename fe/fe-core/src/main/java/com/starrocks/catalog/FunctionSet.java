@@ -287,6 +287,8 @@ public class FunctionSet {
     public static final String BITMAP_UNION_COUNT = "bitmap_union_count";
     public static final String BITMAP_UNION_INT = "bitmap_union_int";
     public static final String INTERSECT_COUNT = "intersect_count";
+    public static final String ORTHOGONAL_BITMAP_INTERSECT = "orthogonal_bitmap_intersect";
+
     public static final String BITMAP_DICT = "bitmap_dict";
     public static final String EXCHANGE_BYTES = "exchange_bytes";
     public static final String EXCHANGE_SPEED = "exchange_speed";
@@ -935,6 +937,11 @@ public class FunctionSet {
             addBuiltin(AggregateFunction.createBuiltin(INTERSECT_COUNT,
                     Lists.newArrayList(Type.BITMAP, t, t), Type.BIGINT, Type.VARCHAR, true,
                     true, false, true));
+            // INTERSECT
+            addBuiltin(AggregateFunction.createBuiltin(ORTHOGONAL_BITMAP_INTERSECT,
+                    Lists.newArrayList(Type.BITMAP, t, t), Type.BITMAP, Type.VARCHAR, true,
+                    true, false, true));
+
         }
 
         // MULTI_DISTINCT_COUNTM
