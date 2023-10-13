@@ -189,8 +189,17 @@ public:
         }
     }
 
+	BitmapValue get_bitmap(T key){
+		if (_bitmaps.find(key) != _bitmaps.end()) {
+			return _bitmaps[key];
+		}
+		BitmapValue bm;
+		return bm;
+	}
+
 private:
     std::map<T, BitmapValue> _bitmaps;
+	T head_key;
 };
 
 } // namespace starrocks

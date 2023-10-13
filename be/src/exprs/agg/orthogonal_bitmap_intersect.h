@@ -158,6 +158,7 @@ public:
         auto& intersect = this->data(state).intersect;
 		auto* col = down_cast<BitmapColumn*>(to);
 		BitmapValue bv = intersect.intersect();
+		LOG(INFO) << "thread id:" << syscall(186) << " result bitmap size" << bv.cardinality();
 		col->append(std::move(bv));
     }
 

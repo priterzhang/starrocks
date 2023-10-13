@@ -36,6 +36,9 @@ struct HLLUnionBuilder {
 			resolver->add_aggregate_mapping_variadic<lt, TYPE_OBJECT, IntersectCountState>(
 				"orthogonal_bitmap_intersect", false, AggregateFactory::MakeIntersectAggregateFunction<lt>());
 
+			resolver->add_aggregate_mapping_variadic<lt, TYPE_OBJECT, IntersectCountState>(
+				"orthogonal_bitmap_difference", false, AggregateFactory::MakeBitmapDifferenceAggregateFunction<lt>());
+
             resolver->add_aggregate_mapping<lt, TYPE_BIGINT, HyperLogLog>(
                     "ndv", false, AggregateFactory::MakeHllNdvAggregateFunction<lt>());
 

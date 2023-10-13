@@ -41,6 +41,7 @@
 #include "exprs/agg/hll_union_count.h"
 #include "exprs/agg/intersect_count.h"
 #include "exprs/agg/orthogonal_bitmap_intersect.h"
+#include "exprs/agg/orthogonal_bitmap_difference.h"
 #include "exprs/agg/maxmin.h"
 #include "exprs/agg/maxmin_by.h"
 #include "exprs/agg/nullable_aggregate.h"
@@ -95,6 +96,9 @@ public:
 
 	template <LogicalType LT>
 	static AggregateFunctionPtr MakeIntersectAggregateFunction();
+
+	template <LogicalType LT>
+	static AggregateFunctionPtr MakeBitmapDifferenceAggregateFunction();
 
 
     template <bool IsWindowFunc>
@@ -260,6 +264,11 @@ AggregateFunctionPtr AggregateFactory::MakeIntersectCountAggregateFunction() {
 template <LogicalType LT>
 AggregateFunctionPtr AggregateFactory::MakeIntersectAggregateFunction() {
 	return std::make_shared<IntersectAggregateFunction<LT>>();
+}
+
+template <LogicalType LT>
+AggregateFunctionPtr AggregateFactory::MakeBitmapDifferenceAggregateFunction() {
+	return std::make_shared<BitmapDifferenceAggregateFunction<LT>>();
 }
 
 
