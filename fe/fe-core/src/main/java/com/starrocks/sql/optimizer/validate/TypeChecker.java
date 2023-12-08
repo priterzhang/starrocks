@@ -39,6 +39,8 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.starrocks.catalog.FunctionSet.ANY_VALUE;
 import static com.starrocks.catalog.FunctionSet.APPROX_COUNT_DISTINCT;
 import static com.starrocks.catalog.FunctionSet.AVG;
+import static com.starrocks.catalog.FunctionSet.BITMAP_DIFFERENCE_COUNT_EACH_COLUMN;
+import static com.starrocks.catalog.FunctionSet.BITMAP_INTERSECT_COUNT_EACH_COLUMN;
 import static com.starrocks.catalog.FunctionSet.BITMAP_UNION_INT;
 import static com.starrocks.catalog.FunctionSet.COUNT;
 import static com.starrocks.catalog.FunctionSet.HLL_RAW;
@@ -263,6 +265,8 @@ public class TypeChecker implements PlanValidator.Checker {
                 case INTERSECT_COUNT:
                 case ORTHOGONAL_BITMAP_INTERSECT:
                 case ORTHOGONAL_BITMAP_DIFFERENCE:
+                case BITMAP_INTERSECT_COUNT_EACH_COLUMN:
+                case BITMAP_DIFFERENCE_COUNT_EACH_COLUMN:
                     if (!isMergeAggFn) {
                         checkColType(arguments.get(0), aggCall, definedTypes[0], argTypes.get(0));
                         checkColType(arguments.get(1), aggCall, definedTypes[1], argTypes.get(1));

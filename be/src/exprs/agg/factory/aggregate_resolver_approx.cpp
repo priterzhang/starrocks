@@ -44,6 +44,13 @@ struct HLLUnionBuilder {
 
             resolver->add_aggregate_mapping<lt, TYPE_BIGINT, HyperLogLog>(
                     "approx_count_distinct", false, AggregateFactory::MakeHllNdvAggregateFunction<lt>());
+
+			resolver->add_aggregate_mapping_variadic<lt, TYPE_ARRAY, IntersectCountState>(
+				"bitmap_intersect_count_each_column", false, AggregateFactory::MakeBitmapIntersectCountEachColumnAggregateFunction<lt>());
+
+			resolver->add_aggregate_mapping_variadic<lt, TYPE_ARRAY, IntersectCountState>(
+				"bitmap_difference_count_each_column", false, AggregateFactory::MakeBitmapDifferenceCountEachColumnAggregateFunction<lt>());
+
         }
     }
 };

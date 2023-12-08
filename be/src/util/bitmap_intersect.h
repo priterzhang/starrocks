@@ -155,6 +155,7 @@ public:
     }
 
     // the serialize size
+
     size_t size() {
         size_t size = 4;
         for (auto& kv : _bitmaps) {

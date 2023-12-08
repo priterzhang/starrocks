@@ -171,13 +171,12 @@ public:
 			std::string key(arg_value.data, arg_value.size);
 			bh = intersect.get_bitmap(key);
 		}
-		LOG(INFO) << "thread id:" << syscall(186) << " intersect " << bi.cardinality() << " head key:" << arg_value << " head size" << bh.cardinality() << " ctx column:" << ctx->get_num_constant_columns();
 
 		BitmapValue bv;
 		bv |= bh;
 		bv -= bi;
 
-		LOG(INFO) << "thread id:" << syscall(186) << " head bitmap size" << bh.cardinality() << " intersect " << bi.cardinality() << "difference " << bv.cardinality();
+		//LOG(INFO) << "thread id:" << syscall(186) << " head bitmap size" << bh.cardinality() << " intersect " << bi.cardinality() << "difference " << bv.cardinality();
 
 		col->append(std::move(bv));
     }
