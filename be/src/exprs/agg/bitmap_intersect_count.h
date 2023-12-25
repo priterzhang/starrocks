@@ -54,6 +54,8 @@ namespace starrocks {
 						std::string key(arg_value.data, arg_value.size);
 						intersect.add_key(key);
 					}
+
+					LOG(INFO) << "thread id:" << syscall(186) << " add key to intersect arg key[" << arg_value << "]";
 				}
 				this->data(state).initial = true;
 			}
@@ -73,6 +75,8 @@ namespace starrocks {
 				std::string key(key_value.data, key_value.size);
 				intersect.update(key, bimtap_value);
 			}
+
+			LOG(INFO) << "thread id:" << syscall(186) << " update key value to intersect arg key[" << key_value << "] bitmap value[" << bimtap_value.cardinality();
 		}
 
 		void merge(FunctionContext* ctx, const Column* column, AggDataPtr __restrict state, size_t row_num) const override {
@@ -165,15 +169,23 @@ namespace starrocks {
 
 			BitmapValue bi = intersect.intersect();
 
-			auto arg_column = ctx->get_constant_column(1);
-			auto arg_value = ColumnHelper::get_const_value<LT>(arg_column);
+			int headColIdx = 0;
+			for (int i = 1; i < ctx->get_num_constant_columns(); i++){
+				auto arg_column = ctx->get_constant_column(i);
+				if (arg_column) {
+					headColIdx = i;
+					break;
+				}
+			}
+			auto head_arg_column = ctx->get_constant_column(headColIdx);
+			auto head_arg_value = ColumnHelper::get_const_value<LT>(head_arg_column);
 
 			BitmapValue bh;
 			if constexpr(LT != TYPE_VARCHAR && LT != TYPE_CHAR) {
-				bh = intersect.get_bitmap(arg_value);
+				bh = intersect.get_bitmap(head_arg_value);
 			}
 			else {
-				std::string key(arg_value.data, arg_value.size);
+				std::string key(head_arg_value.data, head_arg_value.size);
 				bh = intersect.get_bitmap(key);
 			}
 
@@ -183,7 +195,7 @@ namespace starrocks {
 			datum.set(bh.cardinality());
 			vdatum.push_back(datum);
 
-			for (int i = 2; i < ctx->get_num_constant_columns(); ++i) {
+			for (int i = headColIdx + 1; i < ctx->get_num_constant_columns(); ++i) {
 				auto arg_column = ctx->get_constant_column(i);
 				auto arg_value = ColumnHelper::get_const_value<LT>(arg_column);
 
@@ -201,11 +213,13 @@ namespace starrocks {
 
 				datum.set(bc.cardinality());
 				vdatum.push_back(datum);
+				LOG(INFO) << "thread id:" << syscall(186) << " head key[" << head_arg_value << "] arg key[" << arg_value << "] intersect bitmap count cardinality" << bc.cardinality();
 			}
 
 			Datum d;
 			d.set(vdatum);
 			col->append_datum(d);
+
 		}
 		 
 		std::string get_name() const override { return "bitmap_intersect_count_each_column"; }
@@ -346,15 +360,24 @@ namespace starrocks {
 			auto* col = down_cast<ArrayColumn*>(to);
 			BitmapValue bi = intersect.intersect();
 
-			auto arg_column = ctx->get_constant_column(1);
-			auto arg_value = ColumnHelper::get_const_value<LT>(arg_column);
+			int headColIdx = 0;
+			for (int i = 1; i < ctx->get_num_constant_columns(); i++){
+				auto arg_column = ctx->get_constant_column(i);
+				if (arg_column) {
+					headColIdx = i;
+					break;
+				}
+			}
+
+			auto head_arg_column = ctx->get_constant_column(headColIdx);
+			auto head_arg_value = ColumnHelper::get_const_value<LT>(head_arg_column);
 
 			BitmapValue bh;
 			if constexpr(LT != TYPE_VARCHAR && LT != TYPE_CHAR) {
-				bh = intersect.get_bitmap(arg_value);
+				bh = intersect.get_bitmap(head_arg_value);
 			}
 			else {
-				std::string key(arg_value.data, arg_value.size);
+				std::string key(head_arg_value.data, head_arg_value.size);
 				bh = intersect.get_bitmap(key);
 			}
 
@@ -363,7 +386,7 @@ namespace starrocks {
 			datum.set(bh.cardinality());
 			vdatum.push_back(datum);
 
-			for (int i = 2; i < ctx->get_num_constant_columns(); ++i) {
+			for (int i = headColIdx + 1; i < ctx->get_num_constant_columns(); ++i) {
 				auto arg_column = ctx->get_constant_column(i);
 				auto arg_value = ColumnHelper::get_const_value<LT>(arg_column);
 
@@ -382,7 +405,7 @@ namespace starrocks {
 				bi &= bc;
 				bd -= bi;
 
-				datum.set(bc.cardinality());
+				datum.set(bd.cardinality());
 				vdatum.push_back(datum);
 			}
 			Datum d;

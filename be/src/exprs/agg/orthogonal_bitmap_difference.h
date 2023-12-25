@@ -159,8 +159,16 @@ public:
 		auto& intersect = this->data(state).intersect;
 		auto* col = down_cast<BitmapColumn*>(to);
 		BitmapValue bi = intersect.intersect();
-
-		auto arg_column = ctx->get_constant_column(1);
+		
+		int headColIdx = 0;
+		for (int i = 1; i < ctx->get_num_constant_columns(); i++){
+			auto arg_column = ctx->get_constant_column(i);
+			if (arg_column) {
+				headColIdx = i;
+				break;
+			}
+		}
+		auto arg_column = ctx->get_constant_column(headColIdx);
 		auto arg_value = ColumnHelper::get_const_value<LT>(arg_column);
 
 		BitmapValue bh;
@@ -176,7 +184,7 @@ public:
 		bv |= bh;
 		bv -= bi;
 
-		//LOG(INFO) << "thread id:" << syscall(186) << " head bitmap size" << bh.cardinality() << " intersect " << bi.cardinality() << "difference " << bv.cardinality();
+		LOG(INFO) << "thread id:" << syscall(186) << " head bitmap size" << bh.cardinality() << " intersect " << bi.cardinality() << "difference " << bv.cardinality();
 
 		col->append(std::move(bv));
     }
