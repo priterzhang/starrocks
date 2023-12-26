@@ -146,7 +146,7 @@ Status OlapTableSink::init(const TDataSink& t_sink, RuntimeState* state) {
     _ts_profile->server_wait_flush_timer = ADD_TIMER(_profile, "RpcServerWaitFlushTime");
 
     _schema = std::make_shared<OlapTableSchemaParam>();
-    RETURN_IF_ERROR(_schema->init(table_sink.schema));
+    RETURN_IF_ERROR(_schema->init(table_sink.schema, state));
     _vectorized_partition = _pool->add(new OlapTablePartitionParam(_schema, table_sink.partition));
     RETURN_IF_ERROR(_vectorized_partition->init(state));
     _location = _pool->add(new OlapTableLocationParam(table_sink.location));
@@ -185,6 +185,8 @@ Status OlapTableSink::prepare(RuntimeState* state) {
 
     RETURN_IF_ERROR(DataSink::prepare(state));
 
+    _state = state;
+
     _sender_id = state->per_fragment_instance_idx();
     _num_senders = state->num_per_fragment_instances();
 
@@ -207,11 +209,12 @@ Status OlapTableSink::prepare(RuntimeState* state) {
         for (int i = 0; i < _output_expr_ctxs.size(); ++i) {
             if (!is_type_compatible(_output_expr_ctxs[i]->root()->type().type,
                                     _output_tuple_desc->slots()[i]->type().type)) {
-                LOG(WARNING) << "type of exprs is not match slot's, expr_type="
-                             << _output_expr_ctxs[i]->root()->type().type
-                             << ", slot_type=" << _output_tuple_desc->slots()[i]->type().type
-                             << ", slot_name=" << _output_tuple_desc->slots()[i]->col_name();
-                return Status::InternalError("expr's type is not same with slot's");
+                auto msg = fmt::format("type of exprs is not match slot's, expr_type={}, slot_type={}, slot_name={}",
+                                       _output_expr_ctxs[i]->root()->type().type,
+                                       _output_tuple_desc->slots()[i]->type().type,
+                                       _output_tuple_desc->slots()[i]->col_name());
+                LOG(WARNING) << msg;
+                return Status::InternalError(msg);
             }
         }
     }
@@ -325,7 +328,7 @@ Status OlapTableSink::_init_node_channels(RuntimeState* state, IndexIdToTabletBE
         }
         index_id_to_tablet_be_map.emplace(index->index_id, std::move(tablet_to_be));
 
-        auto channel = std::make_unique<IndexChannel>(this, index->index_id);
+        auto channel = std::make_unique<IndexChannel>(this, index->index_id, index->where_clause);
         RETURN_IF_ERROR(channel->init(state, tablets, false));
         _channels.emplace_back(std::move(channel));
     }
@@ -511,7 +514,7 @@ Status OlapTableSink::_incremental_open_node_channel(const std::vector<TOlapTabl
             if (!st.ok()) {
                 LOG(WARNING) << ch->name() << ", tablet open failed, " << ch->print_load_info()
                              << ", node=" << ch->node_info()->host << ":" << ch->node_info()->brpc_port
-                             << ", errmsg=" << st.get_error_msg();
+                             << ", errmsg=" << st.message();
                 err_st = st.clone_and_append(string(" be:") + ch->node_info()->host);
                 channel->mark_as_failed(ch);
             }
@@ -763,6 +766,9 @@ Status OlapTableSink::_fill_auto_increment_id_internal(Chunk* chunk, SlotDescrip
 }
 
 bool OlapTableSink::is_close_done() {
+    if (_tablet_sink_sender == nullptr) {
+        return true;
+    }
     return _tablet_sink_sender->is_close_done();
 }
 
@@ -791,9 +797,12 @@ Status OlapTableSink::close_wait(RuntimeState* state, Status close_status) {
     COUNTER_SET(_ts_profile->convert_chunk_timer, _convert_batch_ns);
     COUNTER_SET(_ts_profile->validate_data_timer, _validate_data_ns);
 
+    if (_tablet_sink_sender == nullptr) {
+        return close_status;
+    }
     Status status = _tablet_sink_sender->close_wait(state, close_status, _ts_profile);
     if (!status.ok()) {
-        _span->SetStatus(trace::StatusCode::kError, status.get_error_msg());
+        _span->SetStatus(trace::StatusCode::kError, std::string(status.message()));
     }
     return status;
 }

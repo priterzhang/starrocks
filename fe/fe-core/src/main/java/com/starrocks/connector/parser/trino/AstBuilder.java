@@ -39,6 +39,7 @@ import com.starrocks.analysis.FunctionName;
 import com.starrocks.analysis.FunctionParams;
 import com.starrocks.analysis.GroupByClause;
 import com.starrocks.analysis.GroupingFunctionCallExpr;
+import com.starrocks.analysis.InformationFunction;
 import com.starrocks.analysis.IntLiteral;
 import com.starrocks.analysis.JoinOperator;
 import com.starrocks.analysis.LargeIntLiteral;
@@ -54,6 +55,7 @@ import com.starrocks.analysis.TableName;
 import com.starrocks.analysis.TimestampArithmeticExpr;
 import com.starrocks.analysis.TypeDef;
 import com.starrocks.analysis.VarBinaryLiteral;
+import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.Type;
@@ -63,11 +65,14 @@ import com.starrocks.sql.analyzer.RelationId;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.ArrayExpr;
 import com.starrocks.sql.ast.CTERelation;
+import com.starrocks.sql.ast.CreateTableAsSelectStmt;
+import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.ExceptRelation;
 import com.starrocks.sql.ast.IntersectRelation;
 import com.starrocks.sql.ast.JoinRelation;
 import com.starrocks.sql.ast.LambdaArgument;
 import com.starrocks.sql.ast.LambdaFunctionExpr;
+import com.starrocks.sql.ast.Property;
 import com.starrocks.sql.ast.QualifiedName;
 import com.starrocks.sql.ast.QueryRelation;
 import com.starrocks.sql.ast.QueryStatement;
@@ -97,8 +102,10 @@ import io.trino.sql.tree.BooleanLiteral;
 import io.trino.sql.tree.Cast;
 import io.trino.sql.tree.CoalesceExpression;
 import io.trino.sql.tree.ComparisonExpression;
+import io.trino.sql.tree.CreateTableAsSelect;
 import io.trino.sql.tree.Cube;
 import io.trino.sql.tree.CurrentTime;
+import io.trino.sql.tree.CurrentUser;
 import io.trino.sql.tree.DataType;
 import io.trino.sql.tree.DateTimeDataType;
 import io.trino.sql.tree.DereferenceExpression;
@@ -174,8 +181,10 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -184,6 +193,7 @@ import static com.starrocks.analysis.AnalyticWindow.BoundaryType.FOLLOWING;
 import static com.starrocks.analysis.AnalyticWindow.BoundaryType.PRECEDING;
 import static com.starrocks.analysis.AnalyticWindow.BoundaryType.UNBOUNDED_FOLLOWING;
 import static com.starrocks.analysis.AnalyticWindow.BoundaryType.UNBOUNDED_PRECEDING;
+import static com.starrocks.connector.parser.trino.TrinoParserUtils.alignWithInputDatetimeType;
 import static com.starrocks.sql.common.ErrorMsgProxy.PARSER_ERROR_MSG;
 import static java.util.stream.Collectors.toList;
 
@@ -682,7 +692,9 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
             callExpr = convertedFunctionCall;
         } else if (DISTINCT_FUNCTION.contains(node.getName().toString())) {
             callExpr = visitDistinctFunctionCall(node, context);
-        }  else {
+        }  else if (FunctionSet.INFORMATION_FUNCTIONS.contains(node.getName().toString())) {
+            callExpr = new InformationFunction(node.getName().toString().toUpperCase());
+        } else {
             callExpr = new FunctionCallExpr(node.getName().toString(), arguments);
         }
         if (node.getWindow().isPresent()) {
@@ -971,17 +983,17 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
         Expr right = (Expr) visit(node.getRight(), context);
 
         if (left instanceof com.starrocks.sql.ast.IntervalLiteral) {
-            return new TimestampArithmeticExpr(BINARY_OPERATOR_MAP.get(node.getOperator()), right,
+            return alignWithInputDatetimeType(new TimestampArithmeticExpr(BINARY_OPERATOR_MAP.get(node.getOperator()), right,
                     ((com.starrocks.sql.ast.IntervalLiteral) left).getValue(),
                     ((com.starrocks.sql.ast.IntervalLiteral) left).getUnitIdentifier().getDescription(),
-                    true);
+                    true));
         }
 
         if (right instanceof com.starrocks.sql.ast.IntervalLiteral) {
-            return new TimestampArithmeticExpr(BINARY_OPERATOR_MAP.get(node.getOperator()), left,
+            return alignWithInputDatetimeType(new TimestampArithmeticExpr(BINARY_OPERATOR_MAP.get(node.getOperator()), left,
                     ((com.starrocks.sql.ast.IntervalLiteral) right).getValue(),
                     ((com.starrocks.sql.ast.IntervalLiteral) right).getUnitIdentifier().getDescription(),
-                    false);
+                    false));
         }
 
         return new ArithmeticExpr(BINARY_OPERATOR_MAP.get(node.getOperator()), left, right);
@@ -1079,6 +1091,11 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
     }
 
     @Override
+    protected ParseNode visitCurrentUser(CurrentUser node, ParseTreeContext context) {
+        return new InformationFunction(FunctionSet.CURRENT_USER.toUpperCase());
+    }
+
+    @Override
     protected ParseNode visitCurrentTime(CurrentTime node, ParseTreeContext context) {
         return new FunctionCallExpr(node.getFunction().getName(), new ArrayList<>());
     }
@@ -1156,6 +1173,34 @@ public class AstBuilder extends AstVisitor<ParseNode, ParseTreeContext> {
     @Override
     protected ParseNode visitCast(Cast node, ParseTreeContext context) {
         return new CastExpr(new TypeDef(getType(node.getType())), (Expr) visit(node.getExpression(), context));
+    }
+
+    @Override
+    protected ParseNode visitCreateTableAsSelect(CreateTableAsSelect node, ParseTreeContext context) {
+        Map<String, String> properties = new HashMap<>();
+        if (node.getProperties() != null) {
+            List<Property> propertyList = visit(node.getProperties(), context, Property.class);
+            for (Property property : propertyList) {
+                properties.put(property.getKey(), property.getValue());
+            }
+        }
+
+        CreateTableStmt createTableStmt = new CreateTableStmt(node.isNotExists(),
+                false,
+                qualifiedNameToTableName(convertQualifiedName(node.getName())),
+                null,
+                "",
+                null,
+                null,
+                null,
+                properties,
+                null,
+                node.getComment().isPresent() ? node.getComment().get() : null);
+
+        return new CreateTableAsSelectStmt(
+                createTableStmt,
+                null,
+                (QueryStatement) visit(node.getQuery(), context));
     }
 
     public Type getType(DataType dataType) {

@@ -35,23 +35,26 @@ class GenerateSeries final : public TableFunction {
 public:
     ~GenerateSeries() override = default;
 
-    Status init(const TFunction& fn, TableFunctionState** state) const override {
+    [[nodiscard]] Status init(const TFunction& fn, TableFunctionState** state) const override {
         *state = new MyState();
         return Status::OK();
     }
 
-    Status prepare(TableFunctionState* /*state*/) const override { return Status::OK(); }
+    [[nodiscard]] Status prepare(TableFunctionState* /*state*/) const override { return Status::OK(); }
 
-    Status open(RuntimeState* /*runtime_state*/, TableFunctionState* /*state*/) const override { return Status::OK(); }
+    [[nodiscard]] Status open(RuntimeState* /*runtime_state*/, TableFunctionState* /*state*/) const override {
+        return Status::OK();
+    }
 
-    Status close(RuntimeState* /*runtime_state*/, TableFunctionState* state) const override {
+    [[nodiscard]] Status close(RuntimeState* /*runtime_state*/, TableFunctionState* state) const override {
         delete state;
         return Status::OK();
     }
 
-    std::pair<Columns, UInt32Column::Ptr> process(TableFunctionState* base_state) const override {
+    std::pair<Columns, UInt32Column::Ptr> process(RuntimeState* runtime_state,
+                                                  TableFunctionState* base_state) const override {
         using NumericType = RunTimeCppType<Type>;
-        auto max_chunk_size = config::vector_chunk_size;
+        auto max_chunk_size = runtime_state->chunk_size();
         auto state = down_cast<MyState*>(base_state);
         auto res = RunTimeColumnType<Type>::create();
         auto offsets = UInt32Column::create();

@@ -64,6 +64,7 @@ import com.starrocks.sql.ast.UserVariable;
 import com.starrocks.sql.optimizer.dump.DumpInfo;
 import com.starrocks.sql.optimizer.dump.QueryDumpInfo;
 import com.starrocks.sql.parser.SqlParser;
+import com.starrocks.thrift.TPipelineProfileLevel;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.thrift.TWorkGroup;
 import org.apache.logging.log4j.LogManager;
@@ -71,6 +72,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.nio.channels.SocketChannel;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -133,14 +135,19 @@ public class ConnectContext {
     protected String currentDb = "";
     // warehouse
     protected String currentWarehouse;
-
-    // username@host of current login user
+    // `qualifiedUser` is the user used when the user establishes connection and authentication.
+    // It is the real user used for this connection.
+    // Different from the `currentUserIdentity` authentication user of execute as,
+    // `qualifiedUser` should not be changed during the entire session.
     protected String qualifiedUser;
-    // username@host combination for the StarRocks account
-    // that the server used to authenticate the current client.
-    // In other word, currentUserIdentity is the entry that matched in StarRocks auth table.
-    // This account determines user's access privileges.
+    // `currentUserIdentity` is the user used for authorization. Under normal circumstances,
+    // `currentUserIdentity` and `qualifiedUser` are the same user,
+    // but currentUserIdentity may be modified by execute as statement.
     protected UserIdentity currentUserIdentity;
+    // currentRoleIds is the role that has taken effect in the current session.
+    // Note that this set is not all roles belonging to the current user.
+    // `execute as` will modify currentRoleIds and assign the active role of the impersonate user to currentRoleIds.
+    // For specific logic, please refer to setCurrentRoleIds.
     protected Set<Long> currentRoleIds = new HashSet<>();
     // Serializer used to pack MySQL packet.
     protected MysqlSerializer serializer;
@@ -156,8 +163,8 @@ public class ConnectContext {
     protected StmtExecutor executor;
     // Command this connection is processing.
     protected MysqlCommand command;
-    // Timestamp in millisecond last command starts at
-    protected long startTime = System.currentTimeMillis();
+    // last command start time
+    protected Instant startTime = Instant.now();
     // Cache thread info for this connection.
     protected ThreadInfo threadInfo;
 
@@ -419,11 +426,15 @@ public class ConnectContext {
     }
 
     public long getStartTime() {
+        return startTime.toEpochMilli();
+    }
+
+    public Instant getStartTimeInstant() {
         return startTime;
     }
 
     public void setStartTime() {
-        startTime = System.currentTimeMillis();
+        startTime = Instant.now();
         returnRows = 0;
     }
 
@@ -435,7 +446,7 @@ public class ConnectContext {
         return returnRows;
     }
 
-    public void resetRetureRows() {
+    public void resetReturnRows() {
         returnRows = 0;
     }
 
@@ -550,6 +561,25 @@ public class ConnectContext {
 
     public void setLastQueryId(UUID queryId) {
         this.lastQueryId = queryId;
+    }
+
+    public boolean isProfileEnabled() {
+        if (sessionVariable == null) {
+            return false;
+        }
+        if (sessionVariable.isEnableProfile()) {
+            return true;
+        }
+        if (!sessionVariable.isEnableBigQueryProfile()) {
+            return false;
+        }
+        return System.currentTimeMillis() - getStartTime() >
+                1000L * sessionVariable.getBigQueryProfileSecondThreshold();
+    }
+
+    public boolean needMergeProfile() {
+        return isProfileEnabled() &&
+                sessionVariable.getPipelineProfileLevel() < TPipelineProfileLevel.DETAIL.getValue();
     }
 
     public byte[] getAuthDataSalt() {
@@ -676,7 +706,7 @@ public class ConnectContext {
     }
 
     // kill operation with no protect.
-    public void kill(boolean killConnection) {
+    public void kill(boolean killConnection, String cancelledMessage) {
         LOG.warn("kill query, {}, kill connection: {}",
                 getMysqlChannel().getRemoteHostPortString(), killConnection);
         // Now, cancel running process.
@@ -685,7 +715,7 @@ public class ConnectContext {
             isKilled = true;
         }
         if (executorRef != null) {
-            executorRef.cancel();
+            executorRef.cancel(cancelledMessage);
         }
         if (killConnection) {
             int times = 0;
@@ -709,11 +739,12 @@ public class ConnectContext {
     }
 
     public void checkTimeout(long now) {
-        if (startTime <= 0) {
+        long startTimeMillis = getStartTime();
+        if (startTimeMillis <= 0) {
             return;
         }
 
-        long delta = now - startTime;
+        long delta = now - startTimeMillis;
         boolean killFlag = false;
         boolean killConnection = false;
         if (command == MysqlCommand.COM_SLEEP) {
@@ -736,7 +767,7 @@ public class ConnectContext {
             }
         }
         if (killFlag) {
-            kill(killConnection);
+            kill(killConnection, "query timeout");
         }
     }
 
@@ -826,7 +857,7 @@ public class ConnectContext {
             // connection start Time
             row.add(TimeUtils.longToTimeString(connectionStartTime));
             // Time
-            row.add("" + (nowMs - startTime) / 1000);
+            row.add("" + (nowMs - getStartTime()) / 1000);
             // State
             row.add(state.toString());
             // Info

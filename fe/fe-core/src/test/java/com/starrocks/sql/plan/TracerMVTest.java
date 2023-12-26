@@ -14,7 +14,6 @@
 
 package com.starrocks.sql.plan;
 
-import com.starrocks.common.Config;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.planner.MaterializedViewTestBase;
 import org.junit.AfterClass;
@@ -24,10 +23,14 @@ import org.junit.Test;
 public class TracerMVTest extends MaterializedViewTestBase {
 
     @BeforeClass
-    public static void setUp() throws Exception {
-        MaterializedViewTestBase.setUp();
+    public static void beforeClass() throws Exception {
+        MaterializedViewTestBase.beforeClass();
         starRocksAssert.useDatabase(MATERIALIZED_DB_NAME);
-        Config.default_replication_num = 1;
+
+        starRocksAssert.useTable("depts");
+        starRocksAssert.useTable("locations");
+        starRocksAssert.useTable("emps");
+
         String mv = "CREATE MATERIALIZED VIEW `test_distinct_mv1`\n" +
                 "DISTRIBUTED BY HASH(`deptno`, `locationid`) BUCKETS 10\n" +
                 "PROPERTIES (\n" +
@@ -58,7 +61,6 @@ public class TracerMVTest extends MaterializedViewTestBase {
         testRewriteOK(mv, "select emps.locationid, empid, sum(emps.deptno) as col3 from emps " +
                 "join locations on emps.locationid = locations.locationid where empid = 10 group by empid,emps.locationid");
         String pr = Tracers.printScopeTimer();
-        System.out.println(pr);
         Tracers.close();
         assertContains(pr, "-- Planner");
     }
@@ -72,7 +74,6 @@ public class TracerMVTest extends MaterializedViewTestBase {
         testRewriteOK(mv, "select emps.locationid, empid, sum(emps.deptno) as col3 from emps " +
                 "join locations on emps.locationid = locations.locationid where empid = 10 group by empid,emps.locationid");
         String pr = Tracers.printVars();
-        System.out.println(pr);
         Tracers.close();
         assertContains(pr, "mv0: Rewrite Succeed");
     }
@@ -87,7 +88,6 @@ public class TracerMVTest extends MaterializedViewTestBase {
         testRewriteOK(mv, "select emps.locationid, empid, sum(emps.deptno) as col3 from emps " +
                 "join locations on emps.locationid = locations.locationid where empid = 10 group by empid,emps.locationid");
         String pr = Tracers.printLogs();
-        System.out.println(pr);
         Tracers.close();
         assertContains(pr, "[MV TRACE]");
     }
@@ -102,9 +102,69 @@ public class TracerMVTest extends MaterializedViewTestBase {
         testRewriteOK(mv, "select emps.locationid, empid, sum(emps.deptno) as col3 from emps " +
                 "join locations on emps.locationid = locations.locationid where empid = 10 group by empid,emps.locationid");
         String pr = Tracers.printLogs();
-        System.out.println(pr);
         Tracers.close();
         assertNotContains(pr, "[MV TRACE]");
         connectContext.getSessionVariable().setTraceLogMode("command");
+    }
+
+    @Test
+    public void testTracerLogMV_Success1() {
+        connectContext.getSessionVariable().setTraceLogMode("command");
+        Tracers.register(connectContext);
+        Tracers.init(connectContext, Tracers.Mode.LOGS, "MV");
+        String mv = "select locations.locationid, empid, sum(emps.deptno) as col3 from emps " +
+                "join locations on emps.locationid = locations.locationid group by empid,locations.locationid";
+        testRewriteOK(mv, "select emps.locationid, empid, sum(emps.deptno) as col3 from emps " +
+                "join locations on emps.locationid = locations.locationid where empid = 10 group by empid,emps.locationid");
+        String pr = Tracers.printLogs();
+        Tracers.close();
+        assertContains(pr, "[MV TRACE]");
+        assertContains(pr, "Query has already been successfully rewritten by: mv0.");
+    }
+
+    @Test
+    public void testTracerLogMV_Success2() {
+        connectContext.getSessionVariable().setTraceLogMode("command");
+        Tracers.register(connectContext);
+        Tracers.init(connectContext, Tracers.Mode.LOGS, "MV");
+        String mv = "select locations.locationid, empid, sum(emps.deptno) as col3 from emps " +
+                "join locations on emps.locationid = locations.locationid group by empid,locations.locationid";
+        testRewriteOK(mv, "select emps.locationid, empid, sum(emps.deptno) as col3 from emps " +
+                "join locations on emps.locationid = locations.locationid where empid = 10 group by empid,emps.locationid");
+        String pr = Tracers.printLogs();
+        Tracers.close();
+        assertContains(pr, "[MV TRACE]");
+        assertContains(pr, "Query input tables");
+    }
+
+    @Test
+    public void testTracerLogMV_Fail1() {
+        connectContext.getSessionVariable().setTraceLogMode("command");
+        Tracers.register(connectContext);
+        Tracers.init(connectContext, Tracers.Mode.LOGS, "MV");
+        String mv = "select locations.locationid, empid, sum(emps.deptno) as col3 from emps " +
+                "join locations on emps.locationid = locations.locationid group by empid,locations.locationid";
+        testRewriteFail(mv, "select emps.locationid, empid, sum(emps.deptno + 1) as col3 from emps " +
+                "join locations on emps.locationid = locations.locationid where empid  > 10 group by empid,emps.locationid");
+        String pr = Tracers.printLogs();
+        Tracers.close();
+        assertContains(pr, "[MV TRACE]");
+        assertNotContains(pr, "Query has already been successfully rewritten by: mv0.");
+    }
+
+    @Test
+    public void testTracerLogMV_Fail2() {
+        connectContext.getSessionVariable().setTraceLogMode("command");
+        Tracers.register(connectContext);
+        Tracers.init(connectContext, Tracers.Mode.LOGS, "MV");
+        String mv = "select locations.locationid, empid, sum(emps.deptno) as col3 from emps " +
+                "join locations on emps.locationid = locations.locationid group by empid,locations.locationid";
+        testRewriteFail(mv, "select emps.locationid, empid, sum(emps.deptno + 1) as col3 from emps " +
+                "join locations on emps.locationid = locations.locationid where empid  > 10 group by empid,emps.locationid");
+        String pr = Tracers.printLogs();
+        Tracers.close();
+        assertContains(pr, "[MV TRACE]");
+        assertContains(pr, "has related materialized views");
+        assertContains(pr, "Rewrite aggregate group-by/agg expr failed");
     }
 }

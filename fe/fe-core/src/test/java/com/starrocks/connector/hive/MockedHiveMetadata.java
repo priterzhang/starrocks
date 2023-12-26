@@ -1092,7 +1092,7 @@ public class MockedHiveMetadata implements ConnectorMetadata {
                         "", false, -1, null, Lists.newArrayList(), Lists.newArrayList(),
                         Maps.newHashMap());
         Table lineItemPar = new Table("single_partition_table", MOCKED_DATACACHE_DB, null, 0, 0, 0, sd,
-                ImmutableList.of(new FieldSchema("l_shipdate", "Date", null)), Maps.newHashMap(),
+                ImmutableList.of(new FieldSchema("l_shipdate", "string", null)), Maps.newHashMap(),
                 null, null, "EXTERNAL_TABLE");
 
         Column partitionColumn1 = new Column("l_shipdate", Type.DATE);
@@ -1504,7 +1504,7 @@ public class MockedHiveMetadata implements ConnectorMetadata {
                                                               Map<String, HivePartitionStats> hivePartitionStatsMap,
                                                               double avgNumPerPartition, double rowCount) {
         HiveMetaClient metaClient = new HiveMetaClient(new HiveConf());
-        HiveMetastore metastore = new HiveMetastore(metaClient, MOCKED_HIVE_CATALOG_NAME);
+        HiveMetastore metastore = new HiveMetastore(metaClient, MOCKED_HIVE_CATALOG_NAME, MetastoreType.HMS);
         CachingHiveMetastore cachingHiveMetastore =
                 createCatalogLevelInstance(metastore, Executors.newSingleThreadExecutor(), 0, 0, 0, false);
         HiveMetastoreOperations hmsOps =

@@ -118,7 +118,9 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
         @SerializedName("PAIMON")
         PAIMON,
         @SerializedName("HIVE_VIEW")
-        HIVE_VIEW;
+        HIVE_VIEW,
+        @SerializedName("BLACKHOLE")
+        BLACKHOLE;
 
         public static String serialize(TableType type) {
             if (type == CLOUD_NATIVE) {
@@ -254,6 +256,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
         this.id = id;
     }
 
+    public String getCatalogName() {
+        return InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME;
+    }
+
     public String getName() {
         return name;
     }
@@ -286,12 +292,16 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
         return type == TableType.MATERIALIZED_VIEW;
     }
 
-    public boolean isView() {
+    public boolean isOlapView() {
         return type == TableType.VIEW;
     }
 
     public boolean isHiveView() {
         return type == TableType.HIVE_VIEW;
+    }
+
+    public boolean isView() {
+        return isOlapView() || isHiveView();
     }
 
     public boolean isOlapTableOrMaterializedView() {
@@ -354,6 +364,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
         return type == TableType.TABLE_FUNCTION;
     }
 
+    public boolean isBlackHoleTable() {
+        return type == TableType.BLACKHOLE;
+    }
+
     // for create table
     public boolean isOlapOrCloudNativeTable() {
         return isOlapTable() || isCloudNativeTable();
@@ -401,6 +415,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
 
     public long getCreateTime() {
         return createTime;
+    }
+
+    public Map<String, Column> getNameToColumn() {
+        return nameToColumn;
     }
 
     public String getTableLocation() {
@@ -536,6 +554,9 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
     }
 
     public Partition getPartition(String partitionName) {
+        return null;
+    }
+    public Partition getPartition(String partitionName, boolean isTempPartition) {
         return null;
     }
 
@@ -730,6 +751,10 @@ public class Table extends MetaObject implements Writable, GsonPostProcessable {
 
     public boolean isUnPartitioned() {
         return true;
+    }
+
+    public List<Column> getPartitionColumns() {
+        throw new NotImplementedException();
     }
 
     public List<String> getPartitionColumnNames() {

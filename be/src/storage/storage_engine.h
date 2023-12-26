@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "agent/status.h"
+#include "column/chunk.h"
 #include "common/status.h"
 #include "gen_cpp/AgentService_types.h"
 #include "gen_cpp/BackendService_types.h"
@@ -76,6 +77,7 @@ class Tablet;
 class UpdateManager;
 class CompactionManager;
 class PublishVersionManager;
+class DictionaryCacheManager;
 class SegmentFlushExecutor;
 class SegmentReplicateExecutor;
 
@@ -156,8 +158,7 @@ public:
     DataDir* get_store(const std::string& path);
     DataDir* get_store(int64_t path_hash);
 
-    bool is_lake_persistent_index_dir_inited();
-    DataDir* get_persistent_index_store();
+    DataDir* get_persistent_index_store(int64_t tablet_id);
 
     uint32_t available_storage_medium_type_count() { return _available_storage_medium_type_count; }
 
@@ -222,6 +223,8 @@ public:
 
     PublishVersionManager* publish_version_manager() { return _publish_version_manager.get(); }
 
+    DictionaryCacheManager* dictionary_cache_manager() { return _dictionary_cache_manager.get(); }
+
     bthread::Executor* async_delta_writer_executor() { return _async_delta_writer_executor.get(); }
 
     MemTableFlushExecutor* memtable_flush_executor() { return _memtable_flush_executor.get(); }
@@ -279,10 +282,16 @@ public:
 
     void clear_rowset_delta_column_group_cache(const Rowset& rowset);
 
+    void disable_disks(const std::vector<string>& disabled_disks);
+
+    void decommission_disks(const std::vector<string>& decommissioned_disks);
+
     void wake_finish_publish_vesion_thread() {
         std::unique_lock<std::mutex> wl(_finish_publish_version_mutex);
         _finish_publish_version_cv.notify_one();
     }
+
+    bool is_as_cn() { return !_options.need_write_cluster_id; }
 
 protected:
     static StorageEngine* _s_instance;
@@ -338,6 +347,11 @@ private:
     // pk index major compaction function
     void* _pk_index_major_compaction_thread_callback(void* arg);
 
+#ifdef USE_STAROS
+    // local pk index of SHARED_DATA gc/evict function
+    void* _local_pk_index_shared_data_gc_evict_thread_callback(void* arg);
+#endif
+
     bool _check_and_run_manual_compaction_task();
 
     // garbage sweep thread process function. clear snapshot and trash folder
@@ -374,11 +388,7 @@ private:
     EngineOptions _options;
     std::mutex _store_lock;
     std::map<std::string, DataDir*> _store_map;
-    DataDir* _persistent_index_data_dir = nullptr;
     uint32_t _available_storage_medium_type_count;
-
-    std::atomic<bool> _lake_persistent_index_dir_inited{false};
-
     bool _is_all_cluster_id_exist;
 
     std::mutex _gc_mutex;
@@ -410,6 +420,9 @@ private:
     std::vector<std::thread> _manual_compaction_threads;
     // thread to run pk index major compaction
     std::thread _pk_index_major_compaction_thread;
+    // thread to gc/evict local pk index in sharded_data
+    std::thread _local_pk_index_shared_data_gc_evict_thread;
+
     // threads to clean all file descriptor not actively in use
     std::thread _fd_cache_clean_thread;
     std::thread _adjust_cache_thread;
@@ -453,6 +466,8 @@ private:
     std::unique_ptr<CompactionManager> _compaction_manager;
 
     std::unique_ptr<PublishVersionManager> _publish_version_manager;
+
+    std::unique_ptr<DictionaryCacheManager> _dictionary_cache_manager;
 
     std::unordered_map<int64_t, std::shared_ptr<AutoIncrementMeta>> _auto_increment_meta_map;
 

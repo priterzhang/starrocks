@@ -34,6 +34,7 @@ import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.sql.parser.SqlParser;
 import com.starrocks.system.Backend;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInstance;
@@ -93,6 +94,10 @@ public abstract class TestWithFeService {
         runBeforeEach();
     }
 
+    @AfterEach
+    public final void afterEach() throws Exception {
+        runAfterEach();
+    }
     protected void beforeCreatingConnectContext() throws Exception {
 
     }
@@ -104,6 +109,10 @@ public abstract class TestWithFeService {
     }
 
     protected void runBeforeEach() throws Exception {
+    }
+
+    protected void runAfterEach() throws Exception {
+
     }
 
     // Help to create a mocked ConnectContext.
@@ -119,7 +128,7 @@ public abstract class TestWithFeService {
     protected ConnectContext createCtx(UserIdentity user, String host) throws IOException {
         ConnectContext ctx = new ConnectContext();
         ctx.setCurrentUserIdentity(user);
-        ctx.setQualifiedUser(user.getQualifiedUser());
+        ctx.setQualifiedUser(user.getUser());
         ctx.setRemoteIP(host);
         ctx.setGlobalStateMgr(GlobalStateMgr.getCurrentState());
         ctx.setThreadLocalInfo();

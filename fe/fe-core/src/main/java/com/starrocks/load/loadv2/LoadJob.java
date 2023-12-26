@@ -169,6 +169,9 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback implements 
     @SerializedName("pg")
     protected int progress;
 
+    @SerializedName("mc")
+    protected String mergeCondition;
+
     public int getProgress() {
         return this.progress;
     }
@@ -359,6 +362,9 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback implements 
             }
             if (properties.containsKey(LoadStmt.PARTIAL_UPDATE_MODE)) {
                 partialUpdateMode = properties.get(LoadStmt.PARTIAL_UPDATE_MODE);
+            }
+            if (properties.containsKey(LoadStmt.MERGE_CONDITION)) {
+                mergeCondition = properties.get(LoadStmt.MERGE_CONDITION);
             }
 
             if (properties.containsKey(LoadStmt.LOAD_MEM_LIMIT)) {
@@ -640,7 +646,7 @@ public abstract class LoadJob extends AbstractTxnStateChangeCallback implements 
         for (TUniqueId loadId : loadIds) {
             Coordinator coordinator = QeProcessorImpl.INSTANCE.getCoordinator(loadId);
             if (coordinator != null) {
-                coordinator.cancel();
+                coordinator.cancel(failMsg.getMsg());
             }
         }
 

@@ -1,28 +1,3 @@
-[sql]
-select
-    n_name,
-    sum(l_extendedprice * (1 - l_discount)) as revenue
-from
-    customer,
-    orders,
-    lineitem,
-    supplier,
-    nation,
-    region
-where
-        c_custkey = o_custkey
-  and l_orderkey = o_orderkey
-  and l_suppkey = s_suppkey
-  and c_nationkey = s_nationkey
-  and s_nationkey = n_nationkey
-  and n_regionkey = r_regionkey
-  and r_name = 'AFRICA'
-  and o_orderdate >= date '1995-01-01'
-  and o_orderdate < date '1996-01-01'
-group by
-    n_name
-order by
-    revenue desc ;
 [fragment statistics]
 PLAN FRAGMENT 0(F16)
 Output Exprs:42: n_name | 49: sum
@@ -92,6 +67,7 @@ OutPut Exchange Id: 26
 |  equal join conjunct: [37: s_nationkey, INT, true] = [4: c_nationkey, INT, true]
 |  equal join conjunct: [18: l_orderkey, INT, true] = [9: o_orderkey, INT, true]
 |  build runtime filters:
+|  - filter_id = 4, build_expr = (4: c_nationkey), remote = false
 |  - filter_id = 5, build_expr = (9: o_orderkey), remote = true
 |  output columns: 23, 24, 42
 |  cardinality: 16391888
@@ -112,6 +88,8 @@ OutPut Exchange Id: 26
 distribution type: SHUFFLE
 partition exprs: [18: l_orderkey, INT, true]
 cardinality: 120007580
+probe runtime filters:
+- filter_id = 4, probe_expr = (37: s_nationkey)
 
 PLAN FRAGMENT 3(F12)
 
@@ -131,6 +109,8 @@ OutPut Exchange Id: 22
 20:HASH JOIN
 |  join op: INNER JOIN (PARTITIONED)
 |  equal join conjunct: [10: o_custkey, INT, true] = [1: c_custkey, INT, true]
+|  build runtime filters:
+|  - filter_id = 3, build_expr = (1: c_custkey), remote = false
 |  output columns: 4, 9
 |  cardinality: 22765073
 |  column statistics:
@@ -148,6 +128,8 @@ OutPut Exchange Id: 22
 distribution type: SHUFFLE
 partition exprs: [10: o_custkey, INT, true]
 cardinality: 22765073
+probe runtime filters:
+- filter_id = 3, probe_expr = (10: o_custkey)
 
 PLAN FRAGMENT 4(F10)
 
@@ -362,3 +344,4 @@ column statistics:
 * r_regionkey-->[0.0, 4.0, 0.0, 4.0, 1.0] ESTIMATE
 * r_name-->[-Infinity, Infinity, 0.0, 6.8, 1.0] ESTIMATE
 [end]
+

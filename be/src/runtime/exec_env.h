@@ -261,6 +261,7 @@ public:
     PriorityThreadPool* pipeline_sink_io_pool() { return _pipeline_sink_io_pool; }
     PriorityThreadPool* query_rpc_pool() { return _query_rpc_pool; }
     ThreadPool* load_rpc_pool() { return _load_rpc_pool.get(); }
+    ThreadPool* dictionary_cache_pool() { return _dictionary_cache_pool.get(); }
     FragmentMgr* fragment_mgr() { return _fragment_mgr; }
     starrocks::pipeline::DriverExecutor* wg_driver_executor() { return _wg_driver_executor; }
     BaseLoadPathMgr* load_path_mgr() { return _load_path_mgr; }
@@ -309,7 +310,7 @@ public:
 
     spill::DirManager* spill_dir_mgr() const { return _spill_dir_mgr.get(); }
 
-    ThreadPool* vacuum_thread_pool();
+    ThreadPool* delete_file_thread_pool();
 
 private:
     void _wait_for_fragments_finish();
@@ -336,6 +337,7 @@ private:
     PriorityThreadPool* _pipeline_sink_io_pool = nullptr;
     PriorityThreadPool* _query_rpc_pool = nullptr;
     std::unique_ptr<ThreadPool> _load_rpc_pool;
+    std::unique_ptr<ThreadPool> _dictionary_cache_pool;
     FragmentMgr* _fragment_mgr = nullptr;
     pipeline::QueryContextManager* _query_context_mgr = nullptr;
     pipeline::DriverExecutor* _wg_driver_executor = nullptr;

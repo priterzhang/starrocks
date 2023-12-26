@@ -112,6 +112,12 @@ public class CatalogConnectorMetadata implements ConnectorMetadata {
     }
 
     @Override
+    public boolean tableExists(String dbName, String tblName) {
+        ConnectorMetadata metadata = metadataOfDb(dbName);
+        return metadata.tableExists(dbName, tblName);
+    }
+
+    @Override
     public Pair<Table, MaterializedIndexMeta> getMaterializedViewIndex(String dbName, String tblName) {
         return normal.getMaterializedViewIndex(dbName, tblName);
     }
@@ -131,6 +137,11 @@ public class CatalogConnectorMetadata implements ConnectorMetadata {
     public Statistics getTableStatistics(OptimizerContext session, Table table, Map<ColumnRefOperator, Column> columns,
                                          List<PartitionKey> partitionKeys, ScalarOperator predicate, long limit) {
         return normal.getTableStatistics(session, table, columns, partitionKeys, predicate, limit);
+    }
+
+    @Override
+    public List<PartitionKey> getPrunedPartitions(Table table, ScalarOperator predicate, long limit) {
+        return normal.getPrunedPartitions(table, predicate, limit);
     }
 
     @Override

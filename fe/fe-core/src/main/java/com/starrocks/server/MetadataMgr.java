@@ -35,6 +35,7 @@ import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
+import com.starrocks.common.FeConstants;
 import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.Pair;
 import com.starrocks.connector.CatalogConnector;
@@ -243,7 +244,7 @@ public class MetadataMgr {
                     ErrorReport.reportDdlException(ErrorCode.ERR_BAD_DB_ERROR, dbName);
                 }
 
-                if (listTableNames(catalogName, dbName).contains(tableName)) {
+                if (tableExists(catalogName, dbName, tableName)) {
                     if (stmt.isSetIfNotExists()) {
                         LOG.info("create table[{}] which already exists", tableName);
                         return false;
@@ -295,6 +296,11 @@ public class MetadataMgr {
         return connectorTable;
     }
 
+    public boolean tableExists(String catalogName, String dbName, String tblName) {
+        Optional<ConnectorMetadata> connectorMetadata = getOptionalMetadata(catalogName);
+        return connectorMetadata.map(metadata -> metadata.tableExists(dbName, tblName)).orElse(false);
+    }
+
     public Pair<Table, MaterializedIndexMeta> getMaterializedViewIndex(String catalogName, String dbName, String tblName) {
         Optional<ConnectorMetadata> connectorMetadata = getOptionalMetadata(catalogName);
         return connectorMetadata.map(metadata -> metadata.getMaterializedViewIndex(dbName, tblName)).orElse(null);
@@ -340,6 +346,19 @@ public class MetadataMgr {
         return ImmutableList.copyOf(partitionNames.build());
     }
 
+    public List<PartitionKey> getPrunedPartitions(String catalogName, Table table, ScalarOperator predicate, long limit) {
+        Optional<ConnectorMetadata> connectorMetadata = getOptionalMetadata(catalogName);
+        if (connectorMetadata.isPresent()) {
+            try {
+                return connectorMetadata.get().getPrunedPartitions(table, predicate, limit);
+            } catch (Exception e) {
+                LOG.error("Failed to getPrunedPartitions on [{}.{}]", catalogName, table, e);
+                throw e;
+            }
+        }
+        return new ArrayList<>();
+    }
+
     public Statistics getTableStatisticsFromInternalStatistics(Table table, Map<ColumnRefOperator, Column> columns) {
         List<ColumnRefOperator> requiredColumnRefs = new ArrayList<>(columns.keySet());
         List<String> columnNames = requiredColumnRefs.stream().map(col -> columns.get(col).getName()).collect(
@@ -369,12 +388,16 @@ public class MetadataMgr {
                                          List<PartitionKey> partitionKeys,
                                          ScalarOperator predicate,
                                          long limit) {
-        Statistics statistics = getTableStatisticsFromInternalStatistics(table, columns);
-        if (statistics.getColumnStatistics().values().stream().allMatch(ColumnStatistic::isUnknown)) {
+        // FIXME: In testing env, `_statistics_.external_column_statistics` is not created, ignore query columns stats from it.
+        Statistics statistics = FeConstants.runningUnitTest ? null :
+                getTableStatisticsFromInternalStatistics(table, columns);
+        if (statistics == null || statistics.getColumnStatistics().values().stream().allMatch(ColumnStatistic::isUnknown)) {
+            session.setObtainedFromInternalStatistics(false);
             Optional<ConnectorMetadata> connectorMetadata = getOptionalMetadata(catalogName);
             return connectorMetadata.map(metadata -> metadata.getTableStatistics(
                     session, table, columns, partitionKeys, predicate, limit)).orElse(null);
         } else {
+            session.setObtainedFromInternalStatistics(true);
             return statistics;
         }
     }

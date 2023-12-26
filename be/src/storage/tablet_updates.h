@@ -25,6 +25,7 @@
 #include "storage/delta_column_group.h"
 #include "storage/edit_version.h"
 #include "storage/olap_common.h"
+#include "storage/row_store_encoder_factory.h"
 #include "storage/rowset/rowset_writer.h"
 #include "util/blocking_queue.hpp"
 
@@ -221,13 +222,15 @@ public:
 
     // Used for schema change, migrate another tablet's version&rowsets to this tablet
     Status link_from(Tablet* base_tablet, int64_t request_version, ChunkChanger* chunk_changer,
-                     const std::string& err_msg_header = "");
+                     const TabletSchemaCSPtr& base_tablet_schema, const std::string& err_msg_header = "");
 
     Status convert_from(const std::shared_ptr<Tablet>& base_tablet, int64_t request_version,
-                        ChunkChanger* chunk_changer, const std::string& err_msg_header = "");
+                        ChunkChanger* chunk_changer, const TabletSchemaCSPtr& base_tablet_schema,
+                        const std::string& err_msg_header = "");
 
     Status reorder_from(const std::shared_ptr<Tablet>& base_tablet, int64_t request_version,
-                        ChunkChanger* chunk_changer, const std::string& err_msg_header = "");
+                        ChunkChanger* chunk_changer, const TabletSchemaCSPtr& base_tablet_schema,
+                        const std::string& err_msg_header = "");
 
     Status load_snapshot(const SnapshotMeta& snapshot_meta, bool restore_from_backup = false);
 
@@ -332,6 +335,7 @@ private:
     friend class Tablet;
     friend class PrimaryIndex;
     friend class PersistentIndex;
+    friend class UpdateManager;
     friend class RowsetUpdateState;
 
     template <typename K, typename V>
@@ -400,6 +404,8 @@ private:
 
     std::string _debug_version_info(bool lock) const;
 
+    std::string _debug_compaction_stats(const std::vector<uint32_t>& input_rowsets, const uint32_t output_rowset);
+
     void _print_rowsets(std::vector<uint32_t>& rowsets, std::string* dst, bool abbr) const;
 
     void _set_error(const string& msg);
@@ -439,6 +445,8 @@ private:
     void check_for_apply() { _check_for_apply(); }
 
     std::timed_mutex* get_index_lock() { return &_index_lock; }
+
+    Status _get_extra_file_size(int64_t* pindex_size, int64_t* col_size);
 
 private:
     Tablet& _tablet;

@@ -374,6 +374,13 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
                             .build(&_load_rpc_pool));
     REGISTER_GAUGE_STARROCKS_METRIC(load_rpc_threadpool_size, _load_rpc_pool->num_threads)
 
+    RETURN_IF_ERROR(ThreadPoolBuilder("dictionary_cache") // thread pool for dictionary cache Sink
+                            .set_min_threads(1)
+                            .set_max_threads(8)
+                            .set_max_queue_size(1000)
+                            .set_idle_timeout(MonoDelta::FromMilliseconds(2000))
+                            .build(&_dictionary_cache_pool));
+
     std::unique_ptr<ThreadPool> driver_executor_thread_pool;
     _max_executor_threads = CpuInfo::num_cores();
     if (config::pipeline_exec_thread_pool_thread_num > 0) {
@@ -469,7 +476,7 @@ Status ExecEnv::init(const std::vector<StorePath>& store_paths, bool as_cn) {
     // it means acting as compute node while store_path is empty. some threads are not needed for that case.
     Status status = _load_path_mgr->init();
     if (!status.ok()) {
-        LOG(ERROR) << "load path mgr init failed." << status.get_error_msg();
+        LOG(ERROR) << "load path mgr init failed." << status.message();
         exit(-1);
     }
 
@@ -568,6 +575,10 @@ void ExecEnv::stop() {
         _routine_load_task_executor->stop();
     }
 
+    if (_dictionary_cache_pool) {
+        _dictionary_cache_pool->shutdown();
+    }
+
 #ifndef BE_TEST
     close_s3_clients();
 #endif
@@ -654,7 +665,7 @@ int32_t ExecEnv::calc_pipeline_dop(int32_t pipeline_dop) const {
     return std::max<int32_t>(1, _max_executor_threads / 2);
 }
 
-ThreadPool* ExecEnv::vacuum_thread_pool() {
+ThreadPool* ExecEnv::delete_file_thread_pool() {
     return _agent_server ? _agent_server->get_thread_pool(TTaskType::DROP) : nullptr;
 }
 
