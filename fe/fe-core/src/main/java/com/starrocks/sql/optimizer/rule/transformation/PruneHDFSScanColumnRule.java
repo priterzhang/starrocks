@@ -54,6 +54,8 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
             new PruneHDFSScanColumnRule(OperatorType.LOGICAL_FILE_SCAN);
     public static final PruneHDFSScanColumnRule PAIMON_SCAN =
             new PruneHDFSScanColumnRule(OperatorType.LOGICAL_PAIMON_SCAN);
+    public static final PruneHDFSScanColumnRule ODPS_SCAN =
+            new PruneHDFSScanColumnRule(OperatorType.LOGICAL_ODPS_SCAN);
 
     public static final PruneHDFSScanColumnRule TABLE_FUNCTION_TABLE_SCAN =
             new PruneHDFSScanColumnRule(OperatorType.LOGICAL_TABLE_FUNCTION_TABLE_SCAN);
@@ -78,6 +80,15 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
         // if not, we have to choose one materialized column from scan operator output columns
         // with the minimal cost.
         boolean canUseAnyColumn = false;
+
+        // if this scan operator columns are all partitions columns(like iceberg table)
+        // we have to take partition columns are materialized columns and read them from files.
+        // And we can not use `canUseAnyColumn` optimization either.
+        boolean allPartitionColumns =
+                scanOperator.getPartitionColumns()
+                        .containsAll(scanOperator.getColRefToColumnMetaMap().values().stream().map(x -> x.getName()).collect(
+                                Collectors.toList()));
+
         if (!containsMaterializedColumn(scanOperator, scanColumns)) {
             List<ColumnRefOperator> preOutputColumns =
                     new ArrayList<>(scanOperator.getColRefToColumnMetaMap().keySet());
@@ -88,7 +99,7 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
             int smallestIndex = -1;
             int smallestColumnLength = Integer.MAX_VALUE;
             for (int index = 0; index < outputColumns.size(); ++index) {
-                if (isPartitionColumn(scanOperator, outputColumns.get(index).getName())) {
+                if (!allPartitionColumns && isPartitionColumn(scanOperator, outputColumns.get(index).getName())) {
                     continue;
                 }
 
@@ -109,7 +120,7 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
             canUseAnyColumn = true;
         }
 
-        if (!context.getSessionVariable().isEnableCountStarOptimization()) {
+        if (allPartitionColumns || !context.getSessionVariable().isEnableCountStarOptimization()) {
             canUseAnyColumn = false;
         }
 

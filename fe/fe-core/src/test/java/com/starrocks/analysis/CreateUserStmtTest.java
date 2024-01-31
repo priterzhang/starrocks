@@ -35,6 +35,7 @@
 package com.starrocks.analysis;
 
 import com.starrocks.common.AnalysisException;
+import com.starrocks.common.ErrorReportException;
 import com.starrocks.mysql.privilege.AuthPlugin;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.analyzer.AstToSQLBuilder;
@@ -70,7 +71,7 @@ public class CreateUserStmtTest {
 
         sql = "CREATE USER 'user' IDENTIFIED BY PASSWORD '*59c70da2f3e3a5bdf46b68f5c8b8f25762bccef0'";
         stmt = (CreateUserStmt) UtFrameUtils.parseStmtWithNewParser(sql, ConnectContext.get());
-        Assert.assertEquals("user", stmt.getUserIdentity().getQualifiedUser());
+        Assert.assertEquals("user", stmt.getUserIdentity().getUser());
         Assert.assertEquals(
                 "CREATE USER 'user'@'%' IDENTIFIED BY PASSWORD '*59c70da2f3e3a5bdf46b68f5c8b8f25762bccef0'",
                 AstToSQLBuilder.toSQL(stmt));
@@ -138,7 +139,7 @@ public class CreateUserStmtTest {
         Assert.fail("No exception throws.");
     }
 
-    @Test(expected = AnalysisException.class)
+    @Test(expected = ErrorReportException.class)
     public void testBadPass() throws Exception {
         String sql = "CREATE USER 'user' IDENTIFIED BY PASSWORD 'passwd'";
         UtFrameUtils.parseStmtWithNewParser(sql, ConnectContext.get());

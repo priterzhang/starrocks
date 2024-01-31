@@ -57,7 +57,7 @@ Status parse_root_path(const std::string& root_path, StorePath* path);
 
 Status parse_conf_store_paths(const std::string& config_path, std::vector<StorePath>* path);
 
-Status parse_conf_block_cache_paths(const std::string& config_path, std::vector<std::string>* paths);
+Status parse_conf_datacache_paths(const std::string& config_path, std::vector<std::string>* paths);
 
 struct EngineOptions {
     // list paths that tablet will be put into.
@@ -69,4 +69,14 @@ struct EngineOptions {
     // if start as cn, no need to write cluster id
     bool need_write_cluster_id = true;
 };
+
+// Options only applies to cloud-native table r/w IO
+struct LakeIOOptions {
+    // Cache remote file locally on read requests.
+    // This options can be ignored if the underlying filesystem does not support local cache.
+    bool fill_data_cache = false;
+    // Specify different buffer size for different read scenarios
+    int64_t buffer_size = -1;
+};
+
 } // namespace starrocks

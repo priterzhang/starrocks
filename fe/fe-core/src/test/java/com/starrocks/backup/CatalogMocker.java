@@ -53,6 +53,8 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PartitionKey;
+import com.starrocks.catalog.PhysicalPartition;
+import com.starrocks.catalog.PhysicalPartitionImpl;
 import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.RandomDistributionInfo;
 import com.starrocks.catalog.RangePartitionInfo;
@@ -66,10 +68,7 @@ import com.starrocks.common.DdlException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.common.util.Util;
 import com.starrocks.load.Load;
-import com.starrocks.mysql.privilege.Auth;
-import com.starrocks.mysql.privilege.PrivPredicate;
 import com.starrocks.persist.EditLog;
-import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.PartitionValue;
 import com.starrocks.system.SystemInfoService;
@@ -125,6 +124,10 @@ public class CatalogMocker {
     // primary key olap table
     public static final String TEST_TBL3_NAME = "test_tbl3";
     public static final long TEST_TBL3_ID = 30003;
+
+    // partition olap table with multi physical partition
+    public static final String TEST_TBL4_NAME = "test_tbl4";
+    public static final long TEST_TBL4_ID = 30004;
 
     public static final String TEST_PARTITION1_NAME = "p1";
     public static final long TEST_PARTITION1_ID = 40001;
@@ -232,26 +235,6 @@ public class CatalogMocker {
 
         SCHEMA_HASH = Util.schemaHash(0, TEST_TBL_BASE_SCHEMA, null, 0);
         ROLLUP_SCHEMA_HASH = Util.schemaHash(0, TEST_ROLLUP_SCHEMA, null, 0);
-    }
-
-    private static Auth fetchAdminAccess() {
-        Auth auth = new Auth();
-        new Expectations(auth) {
-            {
-                auth.checkGlobalPriv((ConnectContext) any, (PrivPredicate) any);
-                minTimes = 0;
-                result = true;
-
-                auth.checkDbPriv((ConnectContext) any, anyString, (PrivPredicate) any);
-                minTimes = 0;
-                result = true;
-
-                auth.checkTblPriv((ConnectContext) any, anyString, anyString, (PrivPredicate) any);
-                minTimes = 0;
-                result = true;
-            }
-        };
-        return auth;
     }
 
     public static SystemInfoService fetchSystemInfoService() {
@@ -484,83 +467,99 @@ public class CatalogMocker {
         olapTable3.addPartition(partition2Pk);
         db.registerTableUnlocked(olapTable3);
 
+        // 5. range partition multi physical partition olap table
+        {
+            baseIndexP1 = new MaterializedIndex(TEST_TBL4_ID, IndexState.NORMAL);
+            baseIndexP2 = new MaterializedIndex(TEST_TBL4_ID, IndexState.NORMAL);
+            DistributionInfo distributionInfo4 = new RandomDistributionInfo(1);
+            partition1 =
+                    new Partition(TEST_PARTITION1_ID, TEST_PARTITION1_NAME, baseIndexP1, distributionInfo4);
+
+            PhysicalPartition physicalPartition2 = new PhysicalPartitionImpl(
+                        TEST_PARTITION2_ID, TEST_PARTITION1_ID, 0, baseIndexP2);
+            partition1.addSubPartition(physicalPartition2);
+
+            rangePartitionInfo = new RangePartitionInfo(Lists.newArrayList(TEST_TBL_BASE_SCHEMA.get(0)));
+            rangePartitionInfo.setRange(TEST_PARTITION1_ID, false, rangeP1);
+            rangePartitionInfo.setReplicationNum(TEST_PARTITION1_ID, (short) 3);
+            rangePartitionInfo.setDataProperty(TEST_PARTITION1_ID, dataPropertyP1);
+
+            baseTabletP1 = new LocalTablet(TEST_BASE_TABLET_P1_ID);
+            tabletMetaBaseTabletP1 = new TabletMeta(TEST_DB_ID, TEST_TBL4_ID, TEST_PARTITION1_ID,
+                    TEST_TBL4_ID, SCHEMA_HASH, TStorageMedium.HDD);
+            baseIndexP1.addTablet(baseTabletP1, tabletMetaBaseTabletP1);
+            replica3 = new Replica(TEST_REPLICA3_ID, BACKEND1_ID, 0, ReplicaState.NORMAL);
+            replica4 = new Replica(TEST_REPLICA4_ID, BACKEND2_ID, 0, ReplicaState.NORMAL);
+            replica5 = new Replica(TEST_REPLICA5_ID, BACKEND3_ID, 0, ReplicaState.NORMAL);
+
+            baseTabletP1.addReplica(replica3);
+            baseTabletP1.addReplica(replica4);
+            baseTabletP1.addReplica(replica5);
+
+            baseTabletP2 = new LocalTablet(TEST_BASE_TABLET_P2_ID);
+            tabletMetaBaseTabletP2 = new TabletMeta(TEST_DB_ID, TEST_TBL4_ID, TEST_PARTITION2_ID,
+                    TEST_TBL4_ID, SCHEMA_HASH, TStorageMedium.HDD);
+            baseIndexP2.addTablet(baseTabletP2, tabletMetaBaseTabletP2);
+            replica6 = new Replica(TEST_REPLICA6_ID, BACKEND1_ID, 0, ReplicaState.NORMAL);
+            replica7 = new Replica(TEST_REPLICA7_ID, BACKEND2_ID, 0, ReplicaState.NORMAL);
+            replica8 = new Replica(TEST_REPLICA8_ID, BACKEND3_ID, 0, ReplicaState.NORMAL);
+
+            baseTabletP2.addReplica(replica6);
+            baseTabletP2.addReplica(replica7);
+            baseTabletP2.addReplica(replica8);
+
+            OlapTable olapTable4 = new OlapTable(TEST_TBL4_ID, TEST_TBL4_NAME, TEST_TBL_BASE_SCHEMA,
+                    KeysType.DUP_KEYS, rangePartitionInfo, distributionInfo4);
+            Deencapsulation.setField(olapTable4, "baseIndexId", TEST_TBL4_ID);
+            olapTable4.setIndexMeta(TEST_TBL4_ID, TEST_TBL4_NAME, TEST_TBL_BASE_SCHEMA, 0, SCHEMA_HASH, (short) 1,
+                            TStorageType.COLUMN, KeysType.DUP_KEYS);
+
+            olapTable4.addPartition(partition1);
+
+            db.registerTableUnlocked(olapTable4);
+        }
+
         return db;
     }
 
     public static GlobalStateMgr fetchAdminCatalog() {
-        try {
-            FakeEditLog fakeEditLog = new FakeEditLog();
+        FakeEditLog fakeEditLog = new FakeEditLog();
 
-            GlobalStateMgr globalStateMgr = Deencapsulation.newInstance(GlobalStateMgr.class);
+        GlobalStateMgr globalStateMgr = Deencapsulation.newInstance(GlobalStateMgr.class);
 
-            Database db = new Database();
-            Auth auth = fetchAdminAccess();
+        Database db = new Database();
 
-            new Expectations(globalStateMgr) {
-                {
-                    globalStateMgr.getAuth();
-                    minTimes = 0;
-                    result = auth;
-
-                    globalStateMgr.getDb(TEST_DB_NAME);
-                    minTimes = 0;
-                    result = db;
-
-                    globalStateMgr.getDb(WRONG_DB);
-                    minTimes = 0;
-                    result = null;
-
-                    globalStateMgr.getDb(TEST_DB_ID);
-                    minTimes = 0;
-                    result = db;
-
-                    globalStateMgr.getDb(anyString);
-                    minTimes = 0;
-                    result = new Database();
-
-                    globalStateMgr.getDbNames();
-                    minTimes = 0;
-                    result = Lists.newArrayList(TEST_DB_NAME);
-
-                    globalStateMgr.getLoadInstance();
-                    minTimes = 0;
-                    result = new Load();
-
-                    globalStateMgr.getEditLog();
-                    minTimes = 0;
-                    result = new EditLog(new ArrayBlockingQueue<>(100));
-
-                    globalStateMgr.changeCatalogDb((ConnectContext) any, WRONG_DB);
-                    minTimes = 0;
-                    result = new DdlException("failed");
-
-                    globalStateMgr.changeCatalogDb((ConnectContext) any, anyString);
-                    minTimes = 0;
-                }
-            };
-            return globalStateMgr;
-        } catch (DdlException e) {
-            return null;
-        }
-    }
-
-    public static Auth fetchBlockAccess() {
-        Auth auth = new Auth();
-        new Expectations(auth) {
+        new Expectations(globalStateMgr) {
             {
-                auth.checkGlobalPriv((ConnectContext) any, (PrivPredicate) any);
+                globalStateMgr.getDb(TEST_DB_NAME);
                 minTimes = 0;
-                result = false;
+                result = db;
 
-                auth.checkDbPriv((ConnectContext) any, anyString, (PrivPredicate) any);
+                globalStateMgr.getDb(WRONG_DB);
                 minTimes = 0;
-                result = false;
+                result = null;
 
-                auth.checkTblPriv((ConnectContext) any, anyString, anyString, (PrivPredicate) any);
+                globalStateMgr.getDb(TEST_DB_ID);
                 minTimes = 0;
-                result = false;
+                result = db;
+
+                globalStateMgr.getDb(anyString);
+                minTimes = 0;
+                result = new Database();
+
+                globalStateMgr.getLocalMetastore().listDbNames();
+                minTimes = 0;
+                result = Lists.newArrayList(TEST_DB_NAME);
+
+                globalStateMgr.getLoadInstance();
+                minTimes = 0;
+                result = new Load();
+
+                globalStateMgr.getEditLog();
+                minTimes = 0;
+                result = new EditLog(new ArrayBlockingQueue<>(100));
             }
         };
-        return auth;
+        return globalStateMgr;
     }
 }

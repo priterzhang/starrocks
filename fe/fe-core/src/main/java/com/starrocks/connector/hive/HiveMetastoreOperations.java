@@ -131,7 +131,7 @@ public class HiveMetastoreOperations {
         boolean deleteData = false;
         try {
             deleteData = !FileSystem.get(URI.create(dbLocation), hadoopConf)
-                    .listLocatedStatus(new Path(dbLocation)).hasNext();;
+                    .listLocatedStatus(new Path(dbLocation)).hasNext();
         } catch (Exception e) {
             LOG.error("Failed to check database directory", e);
         }
@@ -205,6 +205,10 @@ public class HiveMetastoreOperations {
         return metastore.getTable(dbName, tableName);
     }
 
+    public boolean tableExists(String dbName, String tableName) {
+        return metastore.tableExists(dbName, tableName);
+    }
+
     public List<String> getPartitionKeys(String dbName, String tableName) {
         return metastore.getPartitionKeysByValue(dbName, tableName, HivePartitionValue.ALL_PARTITION_VALUES);
     }
@@ -225,8 +229,8 @@ public class HiveMetastoreOperations {
         metastore.dropPartition(dbName, tableName, partitionValues, deleteData);
     }
 
-    public boolean partitionExists(String dbName, String tableName, List<String> partitionValues) {
-        return metastore.partitionExists(dbName, tableName, partitionValues);
+    public boolean partitionExists(Table table, List<String> partitionValues) {
+        return metastore.partitionExists(table, partitionValues);
     }
 
     public Map<String, Partition> getPartitionByPartitionKeys(Table table, List<PartitionKey> partitionKeys) {

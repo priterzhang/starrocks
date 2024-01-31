@@ -27,9 +27,12 @@ public interface PhysicalPartition {
 
     // partition id which contains this physical partition
     public long getParentId();
+    public void setParentId(long parentId);
 
     // physical partition id
     public long getId();
+    public void setIdForRestore(long id);
+    public long getBeforeRestoreId();
 
     public long getShardGroupId();
 
@@ -67,6 +70,8 @@ public interface PhysicalPartition {
 
     // statistic interface
 
+    // max data size of one tablet in this physical partition
+    public long getTabletMaxDataSize();
     // partition data size reported by be, but may be not accurate
     public long storageDataSize();
     // partition row count reported by be, but may be not accurate
@@ -77,4 +82,11 @@ public interface PhysicalPartition {
     public boolean hasStorageData();
     public boolean hasMaterializedView();
     public boolean isFirstLoad();
+
+    // for lake partition
+    public long getMinRetainVersion();
+    public void setMinRetainVersion(long minRetainVersion);
+    public long getLastVacuumTime();
+    public void setLastVacuumTime(long lastVacuumTime);
+
 }

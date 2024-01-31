@@ -20,6 +20,7 @@ import com.starrocks.mysql.MysqlPassword;
 import com.starrocks.persist.AlterUserInfo;
 import com.starrocks.persist.CreateUserInfo;
 import com.starrocks.persist.OperationType;
+import com.starrocks.persist.metablock.SRMetaBlockReader;
 import com.starrocks.privilege.AuthorizationMgr;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.DDLStmtExecutor;
@@ -28,10 +29,13 @@ import com.starrocks.sql.ast.AlterUserStmt;
 import com.starrocks.sql.ast.CreateRoleStmt;
 import com.starrocks.sql.ast.CreateUserStmt;
 import com.starrocks.sql.ast.DropUserStmt;
+import com.starrocks.sql.ast.GrantRoleStmt;
 import com.starrocks.sql.ast.SetDefaultRoleStmt;
 import com.starrocks.sql.ast.SetUserPropertyStmt;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.ast.UserIdentity;
+import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
+import com.starrocks.sql.optimizer.rewrite.ScalarOperatorFunctions;
 import com.starrocks.utframe.UtFrameUtils;
 import org.junit.AfterClass;
 import org.junit.Assert;
@@ -79,12 +83,12 @@ public class AuthenticationManagerTest {
 
         AuthenticationMgr masterManager = new AuthenticationMgr();
         Assert.assertNull(masterManager.checkPassword(
-                testUserWithIp.getQualifiedUser(), testUserWithIp.getHost(), scramble, seed));
+                testUserWithIp.getUser(), testUserWithIp.getHost(), scramble, seed));
         Assert.assertFalse(masterManager.doesUserExist(testUser));
         Assert.assertFalse(masterManager.doesUserExist(testUserWithIp));
         UtFrameUtils.PseudoJournalReplayer.resetFollowerJournalQueue();
         UtFrameUtils.PseudoImage emptyImage = new UtFrameUtils.PseudoImage();
-        masterManager.save(emptyImage.getDataOutputStream());
+        masterManager.saveV2(emptyImage.getDataOutputStream());
 
         // master create test@%; no password
         String sql = "create user test";
@@ -92,7 +96,7 @@ public class AuthenticationManagerTest {
         masterManager.createUser(stmt);
         Assert.assertTrue(masterManager.doesUserExist(testUser));
         Assert.assertFalse(masterManager.doesUserExist(testUserWithIp));
-        UserIdentity user = masterManager.checkPassword(testUser.getQualifiedUser(),
+        UserIdentity user = masterManager.checkPassword(testUser.getUser(),
                 "10.1.1.1", new byte[0], new byte[0]);
         Assert.assertEquals(user, testUser);
 
@@ -105,19 +109,22 @@ public class AuthenticationManagerTest {
         masterManager.createUser(stmt);
         Assert.assertTrue(masterManager.doesUserExist(testUser));
         Assert.assertTrue(masterManager.doesUserExist(testUserWithIp));
-        user = masterManager.checkPassword(testUser.getQualifiedUser(), testUserWithIp.getHost(), scramble, seed);
+        user = masterManager.checkPassword(testUser.getUser(), testUserWithIp.getHost(), scramble, seed);
         Assert.assertEquals(user, testUserWithIp);
 
         // make final snapshot
         UtFrameUtils.PseudoImage finalImage = new UtFrameUtils.PseudoImage();
-        masterManager.save(finalImage.getDataOutputStream());
+        masterManager.saveV2(finalImage.getDataOutputStream());
 
         // login from 10.1.1.2 with password will fail
-        user = masterManager.checkPassword(testUser.getQualifiedUser(), "10.1.1.2", scramble, seed);
+        user = masterManager.checkPassword(testUser.getUser(), "10.1.1.2", scramble, seed);
         Assert.assertNull(user);
 
         // start to replay
-        AuthenticationMgr followerManager = AuthenticationMgr.load(emptyImage.getDataInputStream());
+        AuthenticationMgr followerManager = new AuthenticationMgr();
+        SRMetaBlockReader srMetaBlockReader = new SRMetaBlockReader(emptyImage.getDataInputStream());
+        followerManager.loadV2(srMetaBlockReader);
+
         Assert.assertFalse(followerManager.doesUserExist(testUser));
         Assert.assertFalse(followerManager.doesUserExist(testUserWithIp));
 
@@ -133,7 +140,7 @@ public class AuthenticationManagerTest {
                 info.getPluginVersion());
         Assert.assertTrue(followerManager.doesUserExist(testUser));
         Assert.assertFalse(followerManager.doesUserExist(testUserWithIp));
-        user = followerManager.checkPassword(testUser.getQualifiedUser(), "10.1.1.1", new byte[0], new byte[0]);
+        user = followerManager.checkPassword(testUser.getUser(), "10.1.1.1", new byte[0], new byte[0]);
         Assert.assertEquals(user, testUser);
 
         // replay create test@10.1.1.1
@@ -147,20 +154,23 @@ public class AuthenticationManagerTest {
                 info.getPluginVersion());
         Assert.assertTrue(followerManager.doesUserExist(testUser));
         Assert.assertTrue(followerManager.doesUserExist(testUserWithIp));
-        user = followerManager.checkPassword(testUser.getQualifiedUser(), "10.1.1.1", scramble, seed);
+        user = followerManager.checkPassword(testUser.getUser(), "10.1.1.1", scramble, seed);
         Assert.assertEquals(user, testUserWithIp);
 
         // login from 10.1.1.2 with password will fail
-        user = followerManager.checkPassword(testUser.getQualifiedUser(), "10.1.1.2", scramble, seed);
+        user = followerManager.checkPassword(testUser.getUser(), "10.1.1.2", scramble, seed);
         Assert.assertNull(user);
 
         // purely loaded from image
-        AuthenticationMgr imageManager = AuthenticationMgr.load(finalImage.getDataInputStream());
+        AuthenticationMgr imageManager = new AuthenticationMgr();
+        srMetaBlockReader = new SRMetaBlockReader(finalImage.getDataInputStream());
+        imageManager.loadV2(srMetaBlockReader);
+
         Assert.assertTrue(imageManager.doesUserExist(testUser));
         Assert.assertTrue(imageManager.doesUserExist(testUserWithIp));
-        user = imageManager.checkPassword(testUser.getQualifiedUser(), "10.1.1.1", scramble, seed);
+        user = imageManager.checkPassword(testUser.getUser(), "10.1.1.1", scramble, seed);
         Assert.assertEquals(user, testUserWithIp);
-        user = imageManager.checkPassword(testUser.getQualifiedUser(), "10.1.1.2", scramble, seed);
+        user = imageManager.checkPassword(testUser.getUser(), "10.1.1.2", scramble, seed);
         Assert.assertNull(user);
     }
 
@@ -253,7 +263,7 @@ public class AuthenticationManagerTest {
 
         AuthenticationMgr manager = ctx.getGlobalStateMgr().getAuthenticationMgr();
         Assert.assertNull(manager.checkPassword(
-                testUser.getQualifiedUser(), testUser.getHost(), scramble, seed));
+                testUser.getUser(), testUser.getHost(), scramble, seed));
         Assert.assertFalse(manager.doesUserExist(testUser));
         Assert.assertFalse(manager.doesUserExist(testUserWithIp));
 
@@ -265,20 +275,20 @@ public class AuthenticationManagerTest {
         stmt = UtFrameUtils.parseStmtWithNewParser(sql, ctx);
         DDLStmtExecutor.execute(stmt, ctx);
         Assert.assertNull(manager.checkPassword(
-                testUser.getQualifiedUser(), testUser.getHost(), scramble, seed));
+                testUser.getUser(), testUser.getHost(), scramble, seed));
         Assert.assertTrue(manager.doesUserExist(testUserWithIp));
 
         sql = "alter user test identified by 'abc'";
         stmt = UtFrameUtils.parseStmtWithNewParser(sql, ctx);
         DDLStmtExecutor.execute(stmt, ctx);
         Assert.assertEquals(testUser,
-                manager.checkPassword(testUser.getQualifiedUser(), testUser.getHost(), scramble, seed));
+                manager.checkPassword(testUser.getUser(), testUser.getHost(), scramble, seed));
         Assert.assertTrue(manager.doesUserExist(testUser));
 
         StatementBase dropStmt = UtFrameUtils.parseStmtWithNewParser("drop user test", ctx);
         DDLStmtExecutor.execute(dropStmt, ctx);
         Assert.assertNull(manager.checkPassword(
-                testUser.getQualifiedUser(), testUser.getHost(), scramble, seed));
+                testUser.getUser(), testUser.getHost(), scramble, seed));
         Assert.assertFalse(manager.doesUserExist(testUser));
 
         // can drop twice
@@ -313,7 +323,7 @@ public class AuthenticationManagerTest {
         // 1. create empty image
         UtFrameUtils.PseudoJournalReplayer.resetFollowerJournalQueue();
         UtFrameUtils.PseudoImage emptyImage = new UtFrameUtils.PseudoImage();
-        masterManager.save(emptyImage.getDataOutputStream());
+        masterManager.saveV2(emptyImage.getDataOutputStream());
 
         // 2. create user
         String sql = "create user test";
@@ -321,14 +331,14 @@ public class AuthenticationManagerTest {
         masterManager.createUser(createStmt);
         Assert.assertTrue(masterManager.doesUserExist(testUser));
         Assert.assertEquals(testUser, masterManager.checkPassword(
-                testUser.getQualifiedUser(), "10.1.1.1", new byte[0], null));
+                testUser.getUser(), "10.1.1.1", new byte[0], null));
 
         // 3. alter user
         sql = "alter user test identified by 'abc'";
         AlterUserStmt alterUserStmt = (AlterUserStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
         masterManager.alterUser(alterUserStmt.getUserIdentity(), alterUserStmt.getAuthenticationInfo());
         Assert.assertEquals(testUser, masterManager.checkPassword(
-                testUser.getQualifiedUser(), "10.1.1.1", scramble, seed));
+                testUser.getUser(), "10.1.1.1", scramble, seed));
 
         // 3.1 update user property
         sql = "set property for 'test' 'max_user_connections' = '555'";
@@ -338,7 +348,7 @@ public class AuthenticationManagerTest {
 
         // 4. save image after alter
         UtFrameUtils.PseudoImage alterImage = new UtFrameUtils.PseudoImage();
-        masterManager.save(alterImage.getDataOutputStream());
+        masterManager.saveV2(alterImage.getDataOutputStream());
 
         // 5. drop user
         sql = "drop user test";
@@ -348,10 +358,13 @@ public class AuthenticationManagerTest {
 
         // 6. save final image
         UtFrameUtils.PseudoImage finalImage = new UtFrameUtils.PseudoImage();
-        masterManager.save(finalImage.getDataOutputStream());
+        masterManager.saveV2(finalImage.getDataOutputStream());
 
         // 7. verify replay...
-        AuthenticationMgr followerManager = AuthenticationMgr.load(emptyImage.getDataInputStream());
+        AuthenticationMgr followerManager = new AuthenticationMgr();
+        SRMetaBlockReader srMetaBlockReader = new SRMetaBlockReader(emptyImage.getDataInputStream());
+        followerManager.loadV2(srMetaBlockReader);
+
         Assert.assertFalse(followerManager.doesUserExist(testUser));
         // 7.1 replay create user
         CreateUserInfo createInfo = (CreateUserInfo)
@@ -361,13 +374,13 @@ public class AuthenticationManagerTest {
                 createInfo.getUserPrivilegeCollection(), createInfo.getPluginId(), createInfo.getPluginVersion());
         Assert.assertTrue(followerManager.doesUserExist(testUser));
         Assert.assertEquals(testUser, followerManager.checkPassword(
-                testUser.getQualifiedUser(), "10.1.1.1", new byte[0], null));
+                testUser.getUser(), "10.1.1.1", new byte[0], null));
         // 7.2 replay alter user
         AlterUserInfo alterInfo = (AlterUserInfo)
                 UtFrameUtils.PseudoJournalReplayer.replayNextJournal(OperationType.OP_ALTER_USER_V2);
         followerManager.replayAlterUser(alterInfo.getUserIdentity(), alterInfo.getAuthenticationInfo());
         Assert.assertEquals(testUser, followerManager.checkPassword(
-                testUser.getQualifiedUser(), "10.1.1.1", scramble, seed));
+                testUser.getUser(), "10.1.1.1", scramble, seed));
         // 7.2.1 replay update user property
         UserPropertyInfo userPropertyInfo = (UserPropertyInfo)
                 UtFrameUtils.PseudoJournalReplayer.replayNextJournal(OperationType.OP_UPDATE_USER_PROP_V3);
@@ -381,14 +394,19 @@ public class AuthenticationManagerTest {
         Assert.assertTrue(followerManager.doesUserExist(UserIdentity.ROOT));
 
         // 8. verify alter image
-        AuthenticationMgr alterManager = AuthenticationMgr.load(alterImage.getDataInputStream());
+        AuthenticationMgr alterManager = new AuthenticationMgr();
+        srMetaBlockReader = new SRMetaBlockReader(alterImage.getDataInputStream());
+        alterManager.loadV2(srMetaBlockReader);
+
         Assert.assertTrue(alterManager.doesUserExist(testUser));
         Assert.assertEquals(testUser, alterManager.checkPassword(
-                testUser.getQualifiedUser(), "10.1.1.1", scramble, seed));
+                testUser.getUser(), "10.1.1.1", scramble, seed));
         Assert.assertTrue(alterManager.doesUserExist(UserIdentity.ROOT));
 
         // 9. verify final image
-        AuthenticationMgr finalManager = AuthenticationMgr.load(finalImage.getDataInputStream());
+        AuthenticationMgr finalManager = new AuthenticationMgr();
+        srMetaBlockReader = new SRMetaBlockReader(finalImage.getDataInputStream());
+        finalManager.loadV2(srMetaBlockReader);
         Assert.assertFalse(finalManager.doesUserExist(testUser));
         Assert.assertTrue(finalManager.doesUserExist(UserIdentity.ROOT));
     }
@@ -473,11 +491,99 @@ public class AuthenticationManagerTest {
         while (it.hasNext()) {
             Map.Entry<UserIdentity, UserAuthenticationInfo> entry = it.next();
             UserIdentity userIdentity = entry.getKey();
-            if (userIdentity.getQualifiedUser().equals("sort_user")) {
+            if (userIdentity.getUser().equals("sort_user")) {
                 l.add(userIdentity.toString());
             }
         }
         Assert.assertEquals(Arrays.asList(
                 "'sort_user'@'10.1.1.1'", "'sort_user'@'10.1.1.2'", "'sort_user'@['host01']", "'sort_user'@'%'"), l);
+    }
+
+    @Test
+    public void testIsRoleInSession() throws Exception {
+        AuthenticationMgr masterManager = ctx.getGlobalStateMgr().getAuthenticationMgr();
+        AuthorizationMgr authorizationManager = ctx.getGlobalStateMgr().getAuthorizationMgr();
+
+        String sql = "create role test_in_role_r1";
+        CreateRoleStmt createStmt =
+                (CreateRoleStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        authorizationManager.createRole(createStmt);
+
+        sql = "create role test_in_role_r2";
+        createStmt = (CreateRoleStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        authorizationManager.createRole(createStmt);
+
+        sql = "create role test_in_role_r3";
+        createStmt = (CreateRoleStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        authorizationManager.createRole(createStmt);
+
+        sql = "create role test_in_role_r4";
+        createStmt = (CreateRoleStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        authorizationManager.createRole(createStmt);
+
+        sql = "grant test_in_role_r3 to role test_in_role_r2";
+        GrantRoleStmt grantRoleStmt = (GrantRoleStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        authorizationManager.grantRole(grantRoleStmt);
+
+        sql = "grant test_in_role_r2 to role test_in_role_r1";
+        grantRoleStmt = (GrantRoleStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        authorizationManager.grantRole(grantRoleStmt);
+
+        sql = "create user test_in_role_u1 default role test_in_role_r1";
+        CreateUserStmt stmt = (CreateUserStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        masterManager.createUser(stmt);
+
+        ctx.setCurrentUserIdentity(new UserIdentity("test_in_role_u1", "%"));
+        ctx.setCurrentRoleIds(new UserIdentity("test_in_role_u1", "%"));
+
+        Assert.assertTrue(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r1")).getBoolean());
+        Assert.assertTrue(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r2")).getBoolean());
+        Assert.assertTrue(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r3")).getBoolean());
+
+        Assert.assertFalse(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r4")).getBoolean());
+
+        sql = "create user test_in_role_u2 default role test_in_role_r2";
+        stmt = (CreateUserStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+        masterManager.createUser(stmt);
+
+        ctx.setCurrentUserIdentity(new UserIdentity("test_in_role_u2", "%"));
+        ctx.setCurrentRoleIds(new UserIdentity("test_in_role_u2", "%"));
+
+        Assert.assertFalse(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r1")).getBoolean());
+        Assert.assertTrue(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r2")).getBoolean());
+        Assert.assertTrue(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r3")).getBoolean());
+
+        ctx.setCurrentRoleIds(new HashSet<>());
+
+        Assert.assertFalse(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r1")).getBoolean());
+        Assert.assertFalse(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r2")).getBoolean());
+        Assert.assertFalse(ScalarOperatorFunctions.isRoleInSession(
+                ConstantOperator.createVarchar("test_in_role_r3")).getBoolean());
+
+
+        sql = "select is_role_in_session(v1) from (select 1 as v1) t";
+        try {
+            stmt = (CreateUserStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+            Assert.fail();
+        } catch (AnalysisException e) {
+            Assert.assertTrue(e.getMessage().contains("IS_ROLE_IN_SESSION currently only supports constant parameters"));
+        }
+
+        sql = "select is_role_in_session(\"a\", \"b\") from (select 1 as v1) t";
+        try {
+            stmt = (CreateUserStmt) UtFrameUtils.parseStmtWithNewParser(sql, ctx);
+            Assert.fail();
+        } catch (AnalysisException e) {
+            Assert.assertTrue(e.getMessage().contains("IS_ROLE_IN_SESSION currently only supports a single parameter"));
+        }
     }
 }

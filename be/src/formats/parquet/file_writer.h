@@ -79,9 +79,6 @@ struct ParquetBuilderOptions {
 
 class ParquetBuildHelper {
 public:
-    static void build_compression_type(::parquet::WriterProperties::Builder& builder,
-                                       const TCompressionType::type& compression_type);
-
     static arrow::Result<std::shared_ptr<::parquet::schema::GroupNode>> make_schema(
             const std::vector<std::string>& file_column_names, const std::vector<ExprContext*>& output_expr_ctxs,
             const std::vector<FileColumnId>& file_column_ids);
@@ -90,7 +87,10 @@ public:
             const std::vector<std::string>& file_column_names, const std::vector<TypeDescriptor>& type_descs,
             const std::vector<FileColumnId>& file_column_ids);
 
-    static std::shared_ptr<::parquet::WriterProperties> make_properties(const ParquetBuilderOptions& options);
+    static StatusOr<std::shared_ptr<::parquet::WriterProperties>> make_properties(const ParquetBuilderOptions& options);
+
+    static StatusOr<::parquet::Compression::type> convert_compression_type(
+            const TCompressionType::type& compression_type);
 
 private:
     static arrow::Result<::parquet::schema::NodePtr> _make_schema_node(const std::string& name,
@@ -181,7 +181,7 @@ public:
                     std::string partition_location, std::shared_ptr<::parquet::WriterProperties> properties,
                     std::shared_ptr<::parquet::schema::GroupNode> schema,
                     const std::vector<ExprContext*>& output_expr_ctxs, PriorityThreadPool* executor_pool,
-                    RuntimeProfile* parent_profile, int64_t max_file_size);
+                    RuntimeProfile* parent_profile, int64_t max_file_size, RuntimeState* state);
 
     ~AsyncFileWriter() override = default;
 
@@ -225,6 +225,8 @@ private:
 
     RuntimeProfile* _parent_profile = nullptr;
     RuntimeProfile::Counter* _io_timer = nullptr;
+
+    RuntimeState* _state;
 
     std::condition_variable _cv;
     bool _rg_writer_closing = false;

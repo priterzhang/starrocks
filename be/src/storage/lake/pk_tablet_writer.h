@@ -14,12 +14,12 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "gutil/macros.h"
 #include "storage/lake/general_tablet_writer.h"
-#include "storage/lake/tablet_metadata.h"
 
 namespace starrocks {
 class SegmentWriter;
@@ -29,7 +29,9 @@ namespace starrocks::lake {
 
 class HorizontalPkTabletWriter : public HorizontalGeneralTabletWriter {
 public:
-    explicit HorizontalPkTabletWriter(Tablet tablet, std::shared_ptr<const TabletSchema> schema, int64_t txn_id);
+    explicit HorizontalPkTabletWriter(TabletManager* tablet_mgr, int64_t tablet_id,
+                                      std::shared_ptr<const TabletSchema> schema, int64_t txn_id,
+                                      ThreadPool* flush_pool = nullptr);
 
     ~HorizontalPkTabletWriter() override;
 
@@ -48,7 +50,7 @@ public:
     RowsetTxnMetaPB* rowset_txn_meta() override { return _rowset_txn_meta.get(); }
 
 protected:
-    Status flush_segment_writer() override;
+    Status flush_segment_writer(SegmentPB* segment = nullptr) override;
 
 private:
     std::unique_ptr<RowsetTxnMetaPB> _rowset_txn_meta;
@@ -56,14 +58,15 @@ private:
 
 class VerticalPkTabletWriter : public VerticalGeneralTabletWriter {
 public:
-    explicit VerticalPkTabletWriter(Tablet tablet, std::shared_ptr<const TabletSchema> schema, int64_t txn_id,
-                                    uint32_t max_rows_per_segment);
+    explicit VerticalPkTabletWriter(TabletManager* tablet_mgr, int64_t tablet_id,
+                                    std::shared_ptr<const TabletSchema> schema, int64_t txn_id,
+                                    uint32_t max_rows_per_segment, ThreadPool* flush_pool = nullptr);
 
     ~VerticalPkTabletWriter() override;
 
     DISALLOW_COPY(VerticalPkTabletWriter);
 
-    Status write(const starrocks::Chunk& data) override {
+    Status write(const starrocks::Chunk& data, SegmentPB* segment = nullptr) override {
         return Status::NotSupported("VerticalPkTabletWriter write not support");
     }
 

@@ -38,7 +38,9 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
 import com.google.common.base.Strings;
+import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Streams;
 import com.starrocks.analysis.DateLiteral;
@@ -67,27 +69,30 @@ import com.starrocks.server.RunMode;
 import com.starrocks.sql.analyzer.AnalyzerUtils;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.Property;
+import com.starrocks.system.Backend;
+import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TCompressionType;
 import com.starrocks.thrift.TPersistentIndexType;
 import com.starrocks.thrift.TStorageMedium;
 import com.starrocks.thrift.TStorageType;
 import com.starrocks.thrift.TTabletType;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.apache.commons.collections.MapUtils;
 import org.threeten.extra.PeriodDuration;
 
 import java.time.format.DateTimeParseException;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.starrocks.catalog.TableProperty.INVALID;
 
 public class PropertyAnalyzer {
-    private static final Logger LOG = LogManager.getLogger(PropertyAnalyzer.class);
     private static final String COMMA_SEPARATOR = ",";
 
     public static final String PROPERTIES_SHORT_KEY = "short_key";
@@ -124,6 +129,8 @@ public class PropertyAnalyzer {
 
     public static final String PROPERTIES_ENABLE_PERSISTENT_INDEX = "enable_persistent_index";
 
+    public static final String PROPERTIES_LABELS_LOCATION = "labels.location";
+
     public static final String PROPERTIES_PERSISTENT_INDEX_TYPE = "persistent_index_type";
 
     public static final String PROPERTIES_BINLOG_VERSION = "binlog_version";
@@ -133,6 +140,9 @@ public class PropertyAnalyzer {
     public static final String PROPERTIES_BINLOG_TTL = "binlog_ttl_second";
 
     public static final String PROPERTIES_BINLOG_MAX_SIZE = "binlog_max_size";
+
+    public static final String PROPERTIES_STORAGE_TYPE_COLUMN = "column";
+    public static final String PROPERTIES_STORAGE_TYPE_COLUMN_WITH_ROW = "column_with_row";
 
     public static final String PROPERTIES_WRITE_QUORUM = "write_quorum";
 
@@ -155,6 +165,7 @@ public class PropertyAnalyzer {
 
     public static final String PROPERTIES_ENABLE_ASYNC_WRITE_BACK = "enable_async_write_back";
     public static final String PROPERTIES_PARTITION_TTL_NUMBER = "partition_ttl_number";
+    public static final String PROPERTIES_PARTITION_TTL = "partition_ttl";
     public static final String PROPERTIES_PARTITION_LIVE_NUMBER = "partition_live_number";
     public static final String PROPERTIES_AUTO_REFRESH_PARTITIONS_LIMIT = "auto_refresh_partitions_limit";
     public static final String PROPERTIES_PARTITION_REFRESH_NUMBER = "partition_refresh_number";
@@ -166,6 +177,9 @@ public class PropertyAnalyzer {
     public static final String PROPERTIES_FORCE_EXTERNAL_TABLE_QUERY_REWRITE = "force_external_table_query_rewrite";
     public static final String PROPERTIES_QUERY_REWRITE_CONSISTENCY = "query_rewrite_consistency";
     public static final String PROPERTIES_RESOURCE_GROUP = "resource_group";
+
+    public static final String PROPERTIES_WAREHOUSE = "warehouse";
+    public static final String PROPERTIES_WAREHOUSE_ID = "warehouse_id";
 
     public static final String PROPERTIES_MATERIALIZED_VIEW_SESSION_PREFIX = "session.";
 
@@ -190,10 +204,23 @@ public class PropertyAnalyzer {
      */
     public static final String PROPERTY_MV_SORT_KEYS = "mv_sort_keys";
 
-    // light schema change
+    // fast schema evolution
+    public static final String PROPERTIES_USE_FAST_SCHEMA_EVOLUTION = "fast_schema_evolution";
     public static final String PROPERTIES_USE_LIGHT_SCHEMA_CHANGE = "light_schema_change";
 
     public static final String PROPERTIES_DEFAULT_PREFIX = "default.";
+
+    /**
+     * Matches location labels like : ["*", "a:*", "bcd_123:*", "123bcd_:val_123", "  a :  b  "],
+     * leading and trailing space of key and value will be ignored.
+     */
+    public static final String SINGLE_LOCATION_LABEL_REGEX = "(\\*|\\s*[a-z_0-9]+\\s*:\\s*(\\*|[a-z_0-9]+)\\s*)";
+    /**
+     * Matches location labels like: ["*, a: b,  c:d", "*, a:b, *", etc.].
+     * Limit the occurrences of single location label to 10 to avoid regex overflowing the stack.
+     */
+    public static final String MULTI_LOCATION_LABELS_REGEX = "\\s*" + SINGLE_LOCATION_LABEL_REGEX +
+            "\\s*(,\\s*" + SINGLE_LOCATION_LABEL_REGEX + "){0,9}\\s*";
 
     public static DataProperty analyzeDataProperty(Map<String, String> properties,
                                                    DataProperty inferredDataProperty,
@@ -302,7 +329,7 @@ public class PropertyAnalyzer {
         return shortKeyColumnCount;
     }
 
-    public static int analyzePartitionTimeToLive(Map<String, String> properties) {
+    public static int analyzePartitionTTLNumber(Map<String, String> properties) {
         int partitionTimeToLive = INVALID;
         if (properties != null && properties.containsKey(PROPERTIES_PARTITION_TTL_NUMBER)) {
             try {
@@ -316,6 +343,21 @@ public class PropertyAnalyzer {
             properties.remove(PROPERTIES_PARTITION_TTL_NUMBER);
         }
         return partitionTimeToLive;
+    }
+
+    public static Pair<String, PeriodDuration> analyzePartitionTTL(Map<String, String> properties) {
+        if (properties != null && properties.containsKey(PROPERTIES_PARTITION_TTL)) {
+            String ttlStr = properties.get(PROPERTIES_PARTITION_TTL);
+            PeriodDuration duration;
+            try {
+                duration = TimeUtils.parseHumanReadablePeriodOrDuration(ttlStr);
+            } catch (NumberFormatException e) {
+                throw new SemanticException(String.format("illegal %s: %s", PROPERTIES_PARTITION_TTL, e.getMessage()));
+            }
+            properties.remove(PROPERTIES_PARTITION_TTL);
+            return Pair.create(ttlStr, duration);
+        }
+        return Pair.create(null, PeriodDuration.ZERO);
     }
 
     public static int analyzePartitionLiveNumber(Map<String, String> properties,
@@ -345,8 +387,8 @@ public class PropertyAnalyzer {
             } catch (NumberFormatException e) {
                 throw new AnalysisException("Bucket size: " + e.getMessage());
             }
-            if (bucketSize <= 0) {
-                throw new AnalysisException("Illegal Partition Bucket size: " + bucketSize);
+            if (bucketSize < 0) {
+                throw new AnalysisException("Illegal bucket size: " + bucketSize);
             }
             return bucketSize;
         } else {
@@ -470,9 +512,9 @@ public class PropertyAnalyzer {
             throw new AnalysisException("Replication num should larger than 0");
         }
 
-        List<Long> backendIds = GlobalStateMgr.getCurrentSystemInfo().getAvailableBackendIds();
-        if (RunMode.getCurrentRunMode() == RunMode.SHARED_DATA) {
-            backendIds.addAll(GlobalStateMgr.getCurrentSystemInfo().getAvailableComputeNodeIds());
+        List<Long> backendIds = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getAvailableBackendIds();
+        if (RunMode.isSharedDataMode()) {
+            backendIds.addAll(GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getAvailableComputeNodeIds());
             if (RunMode.defaultReplicationNum() > backendIds.size()) {
                 throw new AnalysisException("Number of available CN nodes is " + backendIds.size()
                         + ", less than " + RunMode.defaultReplicationNum());
@@ -505,20 +547,37 @@ public class PropertyAnalyzer {
         return rowDelimiter;
     }
 
-    public static TStorageType analyzeStorageType(Map<String, String> properties) throws AnalysisException {
+    public static TStorageType analyzeStorageType(Map<String, String> properties, OlapTable olapTable)
+            throws AnalysisException {
         // default is COLUMN
         TStorageType tStorageType = TStorageType.COLUMN;
         if (properties != null && properties.containsKey(PROPERTIES_STORAGE_TYPE)) {
             String storageType = properties.get(PROPERTIES_STORAGE_TYPE);
             if (storageType.equalsIgnoreCase(TStorageType.COLUMN.name())) {
                 tStorageType = TStorageType.COLUMN;
+            } else if (olapTable.supportsUpdate() && storageType.equalsIgnoreCase(TStorageType.ROW.name())) {
+                tStorageType = TStorageType.ROW;
+            } else if (olapTable.supportsUpdate() && storageType.equalsIgnoreCase(TStorageType.COLUMN_WITH_ROW.name())) {
+                tStorageType = TStorageType.COLUMN_WITH_ROW;
+                if (olapTable.getColumns().stream().filter(column -> !column.isKey()).count() == 0) {
+                    throw new AnalysisException("column_with_row storage type must have some non-key columns");
+                }
+                for (Column column : olapTable.getColumns()) {
+                    if (!column.isKey() && column.getType().isComplexType()) {
+                        throw new AnalysisException(
+                                "column_with_row storage type does not support complex type. column: " + column.getName());
+                    }
+                }
             } else {
-                throw new AnalysisException("Invalid storage type: " + storageType);
+                throw new AnalysisException(storageType + " for " + olapTable.getKeysType() + " table not supported");
             }
-
+            if (!Config.enable_experimental_rowstore &&
+                    (tStorageType == TStorageType.ROW || tStorageType == TStorageType.COLUMN_WITH_ROW)) {
+                throw new AnalysisException(storageType + " for " + olapTable.getKeysType() +
+                        " table not supported, enable it by setting `enable_experimental_rowstore` to true");
+            }
             properties.remove(PROPERTIES_STORAGE_TYPE);
         }
-
         return tStorageType;
     }
 
@@ -571,24 +630,28 @@ public class PropertyAnalyzer {
         return schemaVersion;
     }
 
-    public static Boolean analyzeUseLightSchemaChange(Map<String, String> properties) throws AnalysisException {
+    public static Boolean analyzeUseFastSchemaEvolution(Map<String, String> properties) throws AnalysisException {
         if (properties == null || properties.isEmpty()) {
-            return Config.allow_default_light_schema_change;
+            return RunMode.isSharedNothingMode() ? Config.enable_fast_schema_evolution
+                    : Config.experimental_enable_fast_schema_evolution_in_shared_data;
         }
-        String value = properties.get(PROPERTIES_USE_LIGHT_SCHEMA_CHANGE);
+        String value = properties.get(PROPERTIES_USE_FAST_SCHEMA_EVOLUTION);
         if (null == value) {
-            return Config.allow_default_light_schema_change;
+            value = properties.get(PROPERTIES_USE_LIGHT_SCHEMA_CHANGE);
+            if (null == value) {
+                return Config.enable_fast_schema_evolution;
+            }
         }
+        properties.remove(PROPERTIES_USE_FAST_SCHEMA_EVOLUTION);
         properties.remove(PROPERTIES_USE_LIGHT_SCHEMA_CHANGE);
         if (Boolean.TRUE.toString().equalsIgnoreCase(value)) {
             return true;
         } else if (Boolean.FALSE.toString().equalsIgnoreCase(value)) {
             return false;
         }
-        throw new AnalysisException(PROPERTIES_USE_LIGHT_SCHEMA_CHANGE
-            + " must be `true` or `false`");
+        throw new AnalysisException(PROPERTIES_USE_FAST_SCHEMA_EVOLUTION
+                + " must be `true` or `false`");
     }
-
 
     public static Set<String> analyzeBloomFilterColumns(Map<String, String> properties, List<Column> columns,
                                                         boolean isPrimaryKey) throws AnalysisException {
@@ -746,6 +809,140 @@ public class PropertyAnalyzer {
         }
     }
 
+    // Convert location string like: "k1:v1,k2:v2" to map
+    // Return `{*:*}` means that we have specified '*" in location string,
+    // in this case, we will scatter replicas on all the backends which have location label,
+    // not some specified locations. So we can ignore others location labels.
+    // And the location string will be simplified to a single '*'.
+    public static Multimap<String, String> analyzeLocationStringToMap(String locations) {
+        Multimap<String, String> locationMap = HashMultimap.create();
+        String[] singleLocationStrings = locations.split(",");
+        for (String singleLocationString : singleLocationStrings) {
+            if (singleLocationString.trim().equals("*")) {
+                locationMap.put("*", "*");
+                return locationMap;
+            } else {
+                String[] kv = singleLocationString.split(":");
+                String key = kv[0].trim();
+                String value = kv[1].trim();
+                if (value.equals("*") && locationMap.containsKey(key)) {
+                    // if value is '*', and we have specified this key before,
+                    // we will ignore this key, and use '*' to replace all the values of this key.
+                    locationMap.removeAll(key);
+                }
+                locationMap.put(key, value);
+            }
+        }
+
+        return locationMap;
+    }
+
+    public static String validateTableLocationProperty(String location) throws SemanticException {
+        if (location.isEmpty()) {
+            return location;
+        }
+
+        if (location.length() > 255) {
+            throw new SemanticException("location is too long, max length is 255");
+        }
+
+        Matcher matcher = Pattern.compile(MULTI_LOCATION_LABELS_REGEX).matcher(location);
+        if (!matcher.matches()) {
+            throw new SemanticException("Invalid location format: " + location +
+                    ", should be like: '*', 'key:*', or 'k1:v1,k2:v2,k1:v11'");
+        }
+
+        // check location is valid or not
+        Multimap<String, String> locationMap = analyzeLocationStringToMap(location);
+
+        if (!locationMap.keySet().contains("*")) {
+            // check location label associated with any backend or not
+            SystemInfoService systemInfoService = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
+            List<Backend> backends = systemInfoService.getBackends();
+            for (String key : locationMap.keySet()) {
+                Collection<String> values = locationMap.get(key);
+                for (String value : values) {
+                    boolean isValueValid = false;
+                    for (Backend backend : backends) {
+                        Pair<String, String> backendLocKV = backend.getSingleLevelLocationKV();
+                        if (backendLocKV != null && backend.getLocation().containsKey(key) &&
+                                (Objects.equals(backendLocKV.second, value) || value.equals("*"))) {
+                            isValueValid = true;
+                            break;
+                        }
+                    }
+                    if (!isValueValid) {
+                        throw new SemanticException(
+                                "Cannot find any backend with location: " + key + ":" + value);
+                    }
+                }
+            }
+        }
+
+        return convertLocationMapToString(locationMap);
+    }
+
+    public static String convertLocationMapToString(Map<String, String> locationMap) {
+        // Convert map to multi hash map.
+        Multimap<String, String> multiLocationMap = HashMultimap.create();
+        for (Map.Entry<String, String> entry : locationMap.entrySet()) {
+            multiLocationMap.put(entry.getKey(), entry.getValue());
+        }
+
+        return convertLocationMapToString(multiLocationMap);
+    }
+
+    // Convert location map to string without head and tail space.
+    public static String convertLocationMapToString(Multimap<String, String> locationMap) {
+        if (locationMap.containsKey("*")) {
+            return "*";
+        }
+
+        return locationMap.entries().stream()
+                .map(entry -> entry.getKey() + ":" + entry.getValue())
+                .collect(Collectors.joining(","));
+    }
+
+    public static String analyzeLocation(Map<String, String> properties, boolean removeAnalyzedProp) {
+        if (properties != null && properties.containsKey(PropertyAnalyzer.PROPERTIES_LABELS_LOCATION)) {
+            if (properties.containsKey(PropertyAnalyzer.PROPERTIES_COLOCATE_WITH)) {
+                throw new SemanticException("colocate table doesn't support location property");
+            }
+            String loc = properties.get(PropertyAnalyzer.PROPERTIES_LABELS_LOCATION);
+            // validate location format
+            String validatedLoc = validateTableLocationProperty(loc);
+            if (removeAnalyzedProp) {
+                properties.remove(PropertyAnalyzer.PROPERTIES_LABELS_LOCATION);
+            }
+            return validatedLoc;
+        } else {
+            if (properties != null && properties.containsKey(PropertyAnalyzer.PROPERTIES_COLOCATE_WITH)) {
+                // won't set default location prop for colocate table
+                return null;
+            }
+            SystemInfoService systemInfoService = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
+            long numOfBackendsWithLocationLabel =
+                    systemInfoService.getBackends().stream()
+                            .filter(backend -> !backend.getLocation().isEmpty()).count();
+            if (numOfBackendsWithLocationLabel > 0) {
+                // If location is not specified explicitly, and we have some backends with location label,
+                // return '*', meaning by default we will scatter the replicas
+                // on all the backends which have location label.
+                // So that we can identify tables before and after upgrade to newer version.
+                // For history tables which don't have location label,
+                // their replica distribution won't be changed after upgrade.
+                return "*";
+            } else {
+                // If no backend has location label, return null,
+                // meaning we won't scatter replicas based on backend location,
+                // so we won't put the location label in table properties(`show create table` won't see it).
+                // User may not want to use this feature at all,
+                // we won't add a default location property to bother users.
+                return null;
+            }
+        }
+    }
+
     // analyze property like : "type" = "xxx";
     public static String analyzeType(Map<String, String> properties) {
         String type = null;
@@ -787,11 +984,11 @@ public class PropertyAnalyzer {
             try {
                 val = Integer.parseInt(valStr);
                 if (val < 0) {
-                    throw new AnalysisException("Property " + PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC 
+                    throw new AnalysisException("Property " + PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC
                             + " must not be less than 0");
                 }
             } catch (NumberFormatException e) {
-                throw new AnalysisException("Property " + PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC 
+                throw new AnalysisException("Property " + PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC
                         + " must be integer: " + valStr);
             }
             properties.remove(PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC);
@@ -911,7 +1108,7 @@ public class PropertyAnalyzer {
         List<UniqueConstraint> mvUniqueConstraints = Lists.newArrayList();
         if (analyzedTable.isMaterializedView() && analyzedTable.hasUniqueConstraints()) {
             mvUniqueConstraints = analyzedTable.getUniqueConstraints().stream().filter(
-                    uniqueConstraint -> parentTable.getName().equals(uniqueConstraint.getTableName()))
+                            uniqueConstraint -> StringUtils.areTableNamesEqual(parentTable, uniqueConstraint.getTableName()))
                     .collect(Collectors.toList());
         }
 
@@ -1050,10 +1247,9 @@ public class PropertyAnalyzer {
 
         boolean enableAsyncWriteBack =
                 analyzeBooleanProp(properties, PropertyAnalyzer.PROPERTIES_ENABLE_ASYNC_WRITE_BACK, false);
-        if (!enableDataCache && enableAsyncWriteBack) {
-            throw new AnalysisException("enable_async_write_back can't be turned on when cache is disabled");
+        if (enableAsyncWriteBack) {
+            throw new AnalysisException("enable_async_write_back is disabled since version 3.1.4");
         }
-
         return new DataCacheInfo(enableDataCache, enableAsyncWriteBack);
     }
 
@@ -1063,7 +1259,11 @@ public class PropertyAnalyzer {
             return null;
         }
         properties.remove(PROPERTIES_DATACACHE_PARTITION_DURATION);
-        return TimeUtils.parseHumanReadablePeriodOrDuration(text);
+        try {
+            return TimeUtils.parseHumanReadablePeriodOrDuration(text);
+        } catch (DateTimeParseException ex) {
+            throw new AnalysisException(ex.getMessage());
+        }
     }
 
     public static TPersistentIndexType analyzePersistentIndexType(Map<String, String> properties) throws AnalysisException {
@@ -1072,6 +1272,8 @@ public class PropertyAnalyzer {
             properties.remove(PROPERTIES_PERSISTENT_INDEX_TYPE);
             if (type.equalsIgnoreCase("LOCAL")) {
                 return TPersistentIndexType.LOCAL;
+            } else if (type.equalsIgnoreCase("CLOUD_NATIVE")) {
+                return TPersistentIndexType.CLOUD_NATIVE;
             } else {
                 throw new AnalysisException("Invalid persistent index type: " + type);
             }
@@ -1097,4 +1299,23 @@ public class PropertyAnalyzer {
         return periodDuration;
     }
 
+    /**
+     * Generate a string representation of properties like ('a'='1', 'b'='2')
+     */
+    public static String stringifyProperties(Map<String, String> properties) {
+        if (MapUtils.isEmpty(properties)) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("(");
+        boolean first = true;
+        for (var entry : properties.entrySet()) {
+            if (!first) {
+                sb.append(",");
+            }
+            first = false;
+            sb.append("'").append(entry.getKey()).append("'=").append("'").append(entry.getValue()).append("'");
+        }
+        sb.append(")");
+        return sb.toString();
+    }
 }

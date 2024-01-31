@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 package com.starrocks.clone;
 
 import com.google.common.collect.Maps;
@@ -20,20 +19,35 @@ import com.starrocks.catalog.CatalogRecycleBin;
 import com.starrocks.catalog.ColocateTableIndex;
 import com.starrocks.catalog.DataProperty;
 import com.starrocks.catalog.Database;
+import com.starrocks.catalog.FakeEditLog;
 import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.Partition;
+import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TabletInvertedIndex;
+import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.Config;
+import com.starrocks.common.Pair;
 import com.starrocks.common.jmockit.Deencapsulation;
+import com.starrocks.common.util.concurrent.lock.Locker;
+import com.starrocks.persist.EditLog;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.NodeMgr;
 import com.starrocks.system.Backend;
 import com.starrocks.system.SystemInfoService;
+import com.starrocks.task.CreateReplicaTask;
+import com.starrocks.thrift.TCompressionType;
 import com.starrocks.thrift.TDisk;
+import com.starrocks.thrift.TFinishTaskRequest;
+import com.starrocks.thrift.TStatus;
+import com.starrocks.thrift.TStatusCode;
 import com.starrocks.thrift.TStorageMedium;
+import com.starrocks.thrift.TStorageType;
+import com.starrocks.thrift.TTabletType;
 import mockit.Expectations;
 import mockit.Mocked;
 import org.apache.commons.lang3.tuple.Triple;
+import org.assertj.core.util.Lists;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -49,18 +63,29 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static com.starrocks.catalog.KeysType.DUP_KEYS;
+
 public class TabletSchedulerTest {
     @Mocked
     GlobalStateMgr globalStateMgr;
 
+    @Mocked
+    private NodeMgr nodeMgr;
+
+    @Mocked
+    private EditLog editLog;
+
     SystemInfoService systemInfoService;
     TabletInvertedIndex tabletInvertedIndex;
     TabletSchedulerStat tabletSchedulerStat;
+    FakeEditLog fakeEditLog;
+
     @Before
     public void setup() throws Exception {
         systemInfoService = new SystemInfoService();
         tabletInvertedIndex = new TabletInvertedIndex();
         tabletSchedulerStat = new TabletSchedulerStat();
+        fakeEditLog = new FakeEditLog();
 
         new Expectations() {
             {
@@ -68,15 +93,36 @@ public class TabletSchedulerTest {
                 result = globalStateMgr;
                 minTimes = 0;
 
-                GlobalStateMgr.getCurrentSystemInfo();
-                result = systemInfoService;
+                GlobalStateMgr.isCheckpointThread();
                 minTimes = 0;
-
-                GlobalStateMgr.getCurrentInvertedIndex();
-                result = tabletInvertedIndex;
-                minTimes = 0;
+                result = false;
             }
         };
+
+        new Expectations(globalStateMgr) {
+            {
+                globalStateMgr.getTabletInvertedIndex();
+                minTimes = 0;
+                result = tabletInvertedIndex;
+
+                globalStateMgr.getNodeMgr();
+                minTimes = 0;
+                result = nodeMgr;
+
+                globalStateMgr.getEditLog();
+                minTimes = 0;
+                result = editLog;
+            }
+        };
+
+        new Expectations(nodeMgr) {
+            {
+                nodeMgr.getClusterInfo();
+                minTimes = 0;
+                result = systemInfoService;
+            }
+        };
+
     }
 
     @Test
@@ -116,12 +162,12 @@ public class TabletSchedulerTest {
         TabletScheduler tabletScheduler = new TabletScheduler(tabletSchedulerStat);
 
         long almostExpireTime = now + (Config.catalog_trash_expire_second - 1) * 1000L;
-        for (int i = 0; i != allCtxs.size(); ++ i) {
+        for (int i = 0; i != allCtxs.size(); ++i) {
             Assert.assertFalse(tabletScheduler.checkIfTabletExpired(allCtxs.get(i), recycleBin, almostExpireTime));
         }
 
         long expireTime = now + (Config.catalog_trash_expire_second + 600) * 1000L;
-        for (int i = 0; i != allCtxs.size() - 1; ++ i) {
+        for (int i = 0; i != allCtxs.size() - 1; ++i) {
             Assert.assertTrue(tabletScheduler.checkIfTabletExpired(allCtxs.get(i), recycleBin, expireTime));
         }
         // only the last survive
@@ -137,6 +183,7 @@ public class TabletSchedulerTest {
         Database goodDB = new Database(2, "bueno");
         Table goodTable = new Table(4, "bueno", Table.TableType.OLAP, new ArrayList<>());
         Partition goodPartition = new Partition(6, "bueno", null, null);
+        Locker locker = new Locker();
 
         List<TabletSchedCtx> tabletSchedCtxList = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
@@ -295,7 +342,7 @@ public class TabletSchedulerTest {
             ctx.setColocateGroupId(v);
             ctx.setOrigPriority(TabletSchedCtx.Priority.LOW);
             if (k == 104L) {
-                ctx.setTabletStatus(LocalTablet.TabletStatus.VERSION_INCOMPLETE);
+                ctx.setTabletStatus(LocalTablet.TabletHealthStatus.VERSION_INCOMPLETE);
             }
             Deencapsulation.invoke(tabletScheduler, "addToRunningTablets", ctx);
         });
@@ -305,5 +352,83 @@ public class TabletSchedulerTest {
                 result.get(new ColocateTableIndex.GroupId(200L, 300L)));
         Assert.assertEquals(Optional.of(2L).get(),
                 result.get(new ColocateTableIndex.GroupId(200L, 301L)));
+    }
+
+    @Test
+    public void testForceRecoverWithEmptyTablet() {
+        Config.recover_with_empty_tablet = true;
+        List<Replica> replicas = new ArrayList<>();
+        replicas.add(new Replica(2, 3001, -1, Replica.ReplicaState.NORMAL));
+        replicas.add(new Replica(3, 3002, -2, Replica.ReplicaState.NORMAL));
+        replicas.add(new Replica(4, 3003, -3, Replica.ReplicaState.NORMAL));
+
+        LocalTablet localTablet = new LocalTablet(5001, replicas);
+        Pair<LocalTablet.TabletHealthStatus, TabletSchedCtx.Priority> result = TabletChecker.getTabletHealthStatusWithPriority(
+                localTablet, systemInfoService, 1, 3,
+                Arrays.asList(1001L, 1002L, 1003L), null);
+        System.out.println(result);
+
+        Assert.assertEquals(LocalTablet.TabletHealthStatus.FORCE_REDUNDANT, result.first);
+
+        Config.recover_with_empty_tablet = false;
+    }
+
+    @Test
+    public void testFinishCreateReplicaTask() {
+        long beId = 10001L;
+        long dbId = 10002L;
+        long tblId = 10003L;
+        long partitionId = 10004L;
+        long indexId = 10005L;
+        long tabletId = 10006L;
+        long replicaId = 10007L;
+        short count = 1;
+        TabletMeta tabletMeta = new TabletMeta(dbId, tblId, partitionId, indexId, -1, TStorageMedium.HDD);
+        CreateReplicaTask createReplicaTask = new CreateReplicaTask(beId, dbId, tblId, partitionId, indexId, tabletId, count,
+                -1, -1L,
+                DUP_KEYS,
+                TStorageType.COLUMN,
+                TStorageMedium.HDD, null, null, 0.0, null,
+                null,
+                false,
+                false,
+                1,
+                TTabletType.TABLET_TYPE_DISK,
+                TCompressionType.LZ4_FRAME);
+
+        Replica replica = new Replica(replicaId, beId, -1, Replica.ReplicaState.RECOVER);
+
+        tabletInvertedIndex.addTablet(tabletId, tabletMeta);
+        tabletInvertedIndex.addReplica(tabletId, replica);
+
+        TabletSchedCtx ctx = new TabletSchedCtx(TabletSchedCtx.Type.REPAIR,
+                dbId, tblId, partitionId, indexId, tabletId, System.currentTimeMillis());
+        LocalTablet tablet = new LocalTablet(tabletId);
+        tablet.addReplica(replica);
+        ctx.setTablet(tablet);
+
+        TabletScheduler tabletScheduler = new TabletScheduler(new TabletSchedulerStat());
+
+        TFinishTaskRequest request = new TFinishTaskRequest();
+        TStatus status = new TStatus();
+        status.setStatus_code(TStatusCode.OK);
+        request.setTask_status(status);
+
+        // failure test: running tablet ctx is not exist
+        tabletScheduler.finishCreateReplicaTask(createReplicaTask, request);
+        Assert.assertEquals(Replica.ReplicaState.RECOVER, replica.getState());
+
+        // failure test: request not ok
+        tabletScheduler.addToRunningTablets(ctx);
+        status.setStatus_code(TStatusCode.CANCELLED);
+        status.setError_msgs(Lists.newArrayList("canceled"));
+        tabletScheduler.finishCreateReplicaTask(createReplicaTask, request);
+        Assert.assertEquals(Replica.ReplicaState.RECOVER, replica.getState());
+
+        // success
+        tabletScheduler.addToRunningTablets(ctx);
+        status.setStatus_code(TStatusCode.OK);
+        tabletScheduler.finishCreateReplicaTask(createReplicaTask, request);
+        Assert.assertEquals(Replica.ReplicaState.NORMAL, replica.getState());
     }
 }

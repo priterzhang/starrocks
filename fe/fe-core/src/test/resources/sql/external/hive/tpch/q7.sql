@@ -1,43 +1,3 @@
-[sql]
-select
-    supp_nation,
-    cust_nation,
-    l_year,
-    sum(volume) as revenue
-from
-    (
-        select
-            n1.n_name as supp_nation,
-            n2.n_name as cust_nation,
-            extract(year from l_shipdate) as l_year,
-            l_extendedprice * (1 - l_discount) as volume
-        from
-            supplier,
-            lineitem,
-            orders,
-            customer,
-            nation n1,
-            nation n2
-        where
-                s_suppkey = l_suppkey
-          and o_orderkey = l_orderkey
-          and c_custkey = o_custkey
-          and s_nationkey = n1.n_nationkey
-          and c_nationkey = n2.n_nationkey
-          and (
-                (n1.n_name = 'CANADA' and n2.n_name = 'IRAN')
-                or (n1.n_name = 'IRAN' and n2.n_name = 'CANADA')
-            )
-          and l_shipdate between date '1995-01-01' and date '1996-12-31'
-    ) as shipping
-group by
-    supp_nation,
-    cust_nation,
-    l_year
-order by
-    supp_nation,
-    cust_nation,
-    l_year ;
 [fragment statistics]
 PLAN FRAGMENT 0(F16)
 Output Exprs:42: n_name | 46: n_name | 49: year | 51: sum
@@ -119,6 +79,7 @@ OutPut Exchange Id: 23
 |  equal join conjunct: [45: n_nationkey, INT, true] = [36: c_nationkey, INT, true]
 |  equal join conjunct: [25: o_custkey, INT, true] = [33: c_custkey, INT, true]
 |  build runtime filters:
+|  - filter_id = 3, build_expr = (36: c_nationkey), remote = false
 |  - filter_id = 4, build_expr = (33: c_custkey), remote = true
 |  output columns: 13, 14, 18, 42, 46
 |  cardinality: 554680
@@ -142,6 +103,8 @@ OutPut Exchange Id: 23
 distribution type: SHUFFLE
 partition exprs: [25: o_custkey, INT, true]
 cardinality: 6939052
+probe runtime filters:
+- filter_id = 3, probe_expr = (45: n_nationkey)
 
 PLAN FRAGMENT 3(F12)
 

@@ -121,13 +121,14 @@ public class SchemaChangeJobV2Test extends DDLTestBase {
         SchemaChangeHandler schemaChangeHandler = GlobalStateMgr.getCurrentState().getSchemaChangeHandler();
         Database db = GlobalStateMgr.getCurrentState().getDb(GlobalStateMgrTestUtil.testDb1);
         OlapTable olapTable = (OlapTable) db.getTable(GlobalStateMgrTestUtil.testTable1);
-        olapTable.setUseLightSchemaChange(false);
+        olapTable.setUseFastSchemaEvolution(false);
         Partition testPartition = olapTable.getPartition(GlobalStateMgrTestUtil.testTable1);
 
         schemaChangeHandler.process(alterTableStmt.getOps(), db, olapTable);
         Map<Long, AlterJobV2> alterJobsV2 = schemaChangeHandler.getAlterJobsV2();
         Assert.assertEquals(1, alterJobsV2.size());
         SchemaChangeJobV2 schemaChangeJob = (SchemaChangeJobV2) alterJobsV2.values().stream().findAny().get();
+        alterJobsV2.clear();
 
         MaterializedIndex baseIndex = testPartition.getBaseIndex();
         assertEquals(IndexState.NORMAL, baseIndex.getState());
@@ -174,13 +175,14 @@ public class SchemaChangeJobV2Test extends DDLTestBase {
         SchemaChangeHandler schemaChangeHandler = GlobalStateMgr.getCurrentState().getSchemaChangeHandler();
         Database db = GlobalStateMgr.getCurrentState().getDb(GlobalStateMgrTestUtil.testDb1);
         OlapTable olapTable = (OlapTable) db.getTable(GlobalStateMgrTestUtil.testTable1);
-        olapTable.setUseLightSchemaChange(false);
+        olapTable.setUseFastSchemaEvolution(false);
         Partition testPartition = olapTable.getPartition(GlobalStateMgrTestUtil.testTable1);
 
         schemaChangeHandler.process(alterTableStmt.getOps(), db, olapTable);
         Map<Long, AlterJobV2> alterJobsV2 = schemaChangeHandler.getAlterJobsV2();
         Assert.assertEquals(1, alterJobsV2.size());
         SchemaChangeJobV2 schemaChangeJob = (SchemaChangeJobV2) alterJobsV2.values().stream().findAny().get();
+        alterJobsV2.clear();
 
         MaterializedIndex baseIndex = testPartition.getBaseIndex();
         assertEquals(IndexState.NORMAL, baseIndex.getState());
@@ -238,6 +240,7 @@ public class SchemaChangeJobV2Test extends DDLTestBase {
         alterClauses.add(new ModifyTablePropertiesClause(properties));
         Database db = CatalogMocker.mockDb();
         OlapTable olapTable = (OlapTable) db.getTable(CatalogMocker.TEST_TBL2_ID);
+        olapTable.setUseFastSchemaEvolution(false);
         schemaChangeHandler.process(alterClauses, db, olapTable);
         Assert.assertTrue(olapTable.getTableProperty().getDynamicPartitionProperty().isExist());
         Assert.assertTrue(olapTable.getTableProperty().getDynamicPartitionProperty().getEnable());
@@ -297,7 +300,7 @@ public class SchemaChangeJobV2Test extends DDLTestBase {
     @Test
     public void testModifyDynamicPartitionWithoutTableProperty() throws UserException {
         modifyDynamicPartitionWithoutTableProperty(DynamicPartitionProperty.ENABLE, "false",
-                DynamicPartitionProperty.TIME_UNIT);
+                "not a dynamic partition table");
         modifyDynamicPartitionWithoutTableProperty(DynamicPartitionProperty.TIME_UNIT, "day",
                 DynamicPartitionProperty.ENABLE);
         modifyDynamicPartitionWithoutTableProperty(DynamicPartitionProperty.END, "3", DynamicPartitionProperty.ENABLE);
@@ -332,8 +335,8 @@ public class SchemaChangeJobV2Test extends DDLTestBase {
         Assert.assertEquals(1, result.getJobId());
         Assert.assertEquals(AlterJobV2.JobState.FINISHED, result.getJobState());
 
-        Assert.assertNotNull(Deencapsulation.getField(result, "partitionIndexMap"));
-        Assert.assertNotNull(Deencapsulation.getField(result, "partitionIndexTabletMap"));
+        Assert.assertNotNull(Deencapsulation.getField(result, "physicalPartitionIndexMap"));
+        Assert.assertNotNull(Deencapsulation.getField(result, "physicalPartitionIndexTabletMap"));
 
         Map<Long, SchemaVersionAndHash> map = Deencapsulation.getField(result, "indexSchemaVersionAndHashMap");
         Assert.assertEquals(10, map.get(1000L).schemaVersion);

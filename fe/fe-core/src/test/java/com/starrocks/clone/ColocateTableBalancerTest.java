@@ -301,7 +301,7 @@ public class ColocateTableBalancerTest {
 
         FeConstants.runningUnitTest = true;
 
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
         GroupId groupId = new GroupId(10005, 10006);
         short replicationNUm = 3;
         ColocateTableIndex colocateTableIndex = createColocateIndex(groupId,
@@ -336,9 +336,21 @@ public class ColocateTableBalancerTest {
 
     @Test
     public void testPerGroupBalance(@Mocked SystemInfoService infoService,
-                                    @Mocked ClusterLoadStatistic statistic) {
+                                    @Mocked ClusterLoadStatistic statistic) throws InterruptedException {
         new Expectations() {
             {
+                // try to fix the unstable test
+                // java.util.ConcurrentModificationException
+                //    at mockit.internal.expectations.state.ExecutingTest.isInjectableMock(ExecutingTest.java:142)
+                //    at mockit.internal.expectations.state.ExecutingTest.addInjectableMock(ExecutingTest.java:137)
+                //    at com.starrocks.clone.ColocateTableBalancerTest$2.<init>(ColocateTableBalancerTest.java:342)
+                //    at com.starrocks.clone.ColocateTableBalancerTest.testPerGroupBalance(ColocateTableBalancerTest.java:340)
+                //
+                // this exception happens at the internal of the mockit, probably a bug of mockit
+                // need to use concurrent safe list for mockit.internal.expectations.state.ExecutingTest#injectableMocks
+                // because mockit itself will start some background thread to clean `injectableMocks` which will have
+                // conflict with our test thread, here is just a workaround, wait for a while to avoid that.
+                Thread.sleep(2000);
                 infoService.getBackend(1L);
                 result = backend1;
                 minTimes = 0;
@@ -416,9 +428,9 @@ public class ColocateTableBalancerTest {
             e.printStackTrace();
         }
 
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
 
-        GlobalStateMgr.getCurrentSystemInfo().getBackendIds();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendIds();
     }
 
     @Test
@@ -497,7 +509,7 @@ public class ColocateTableBalancerTest {
             ColocateGroupSchema groupSchema = new ColocateGroupSchema(groupId, distributionCols, 3, (short) 1);
             group2Schema.put(groupId, groupSchema);
         }
-        ColocateTableIndex colocateTableIndex = GlobalStateMgr.getCurrentColocateIndex();
+        ColocateTableIndex colocateTableIndex = GlobalStateMgr.getCurrentState().getColocateTableIndex();
         // For group 1, bucket: 3, replication_num: 1, backend list per bucket seq: [[1], [2], [3]]
         colocateTableIndex.addBackendsPerBucketSeq(groupId1,
                 Lists.partition(Lists.newArrayList(1L, 2L, 3L), 1));
@@ -592,7 +604,7 @@ public class ColocateTableBalancerTest {
         };
 
         // To avoid "missing x invocation to..." error
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
         GroupId groupId = new GroupId(10000, 10001);
         ColocateTableIndex colocateTableIndex = createColocateIndex(groupId,
                 Lists.newArrayList(4L, 2L, 3L, 4L, 2L, 3L, 4L, 2L, 3L), 3);
@@ -658,7 +670,7 @@ public class ColocateTableBalancerTest {
             }
         };
 
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
         GroupId groupId = new GroupId(10000, 10001);
         ColocateTableIndex colocateTableIndex = createColocateIndex(groupId,
                 Lists.newArrayList(4L, 2L, 3L, 4L, 2L, 3L, 4L, 2L, 3L), 1);
@@ -750,7 +762,7 @@ public class ColocateTableBalancerTest {
                 minTimes = 0;
             }
         };
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
         GroupId groupId = new GroupId(10000, 10001);
         List<Column> distributionCols = Lists.newArrayList();
         distributionCols.add(new Column("k1", Type.INT));
@@ -814,7 +826,7 @@ public class ColocateTableBalancerTest {
             }
         };
 
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
         // all buckets are on different be
         List<Long> allAvailBackendIds = Lists.newArrayList(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L);
         Set<Long> unavailBackendIds = Sets.newHashSet(9L);
@@ -926,7 +938,7 @@ public class ColocateTableBalancerTest {
             }
         };
 
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
         Set<Long> unavailableBeIds = Deencapsulation
                 .invoke(balancer, "getUnavailableBeIdsInGroup", infoService, colocateTableIndex, groupId);
         System.out.println(unavailableBeIds);
@@ -1003,7 +1015,7 @@ public class ColocateTableBalancerTest {
             }
         };
 
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
         List<Long> availableBeIds = Deencapsulation.invoke(balancer, "getAvailableBeIds", infoService);
         Assert.assertArrayEquals(new long[] {2L, 4L}, availableBeIds.stream().mapToLong(i -> i).sorted().toArray());
     }
@@ -1050,7 +1062,7 @@ public class ColocateTableBalancerTest {
                 minTimes = 0;
             }
         };
-        GlobalStateMgr.getCurrentSystemInfo().getIdToBackend();
+        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend();
         GroupId groupId = new GroupId(10000, 10001);
         List<Column> distributionCols = Lists.newArrayList();
         distributionCols.add(new Column("k1", Type.INT));

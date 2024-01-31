@@ -42,6 +42,8 @@ public interface IHiveMetastore {
 
     Table getTable(String dbName, String tableName);
 
+    boolean tableExists(String dbName, String tableName);
+
     List<String> getPartitionKeysByValue(String dbName, String tableName, List<Optional<String>> partitionValues);
 
     default Map<HivePartitionName, Partition> getCachedPartitions(List<HivePartitionName> hivePartitionNames) {
@@ -58,7 +60,7 @@ public interface IHiveMetastore {
 
     void dropPartition(String dbName, String tableName, List<String> partValues, boolean deleteData);
 
-    boolean partitionExists(String dbName, String tableName, List<String> partitionValues);
+    boolean partitionExists(Table table, List<String> partitionValues);
 
     Map<String, Partition> getPartitionsByNames(String dbName, String tableName, List<String> partitionNames);
 
@@ -74,6 +76,10 @@ public interface IHiveMetastore {
     // return refreshed partitions in cache for partitioned table, return empty list for unpartitioned table
     default List<HivePartitionName> refreshTable(String hiveDbName, String hiveTblName, boolean onlyCachedPartitions) {
         return Lists.newArrayList();
+    }
+
+    default boolean refreshView(String hiveDbName, String hiveTblName) {
+        return true;
     }
 
     default List<HivePartitionName> refreshTableBackground(String hiveDbName, String hiveTblName, boolean onlyCachedPartitions) {

@@ -157,8 +157,8 @@ public class StartSchedulingTest extends SchedulerTestBase {
         String sql = "select count(1) from lineitem";
 
         Assert.assertThrows("test runtime exception", RpcException.class, () -> startScheduling(sql));
-        SimpleScheduler.removeFromBlacklist(backend3.getId());
-        Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> !SimpleScheduler.isInBlacklist(backend3.getId()));
+        SimpleScheduler.removeFromBlocklist(backend3.getId());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> !SimpleScheduler.isInBlocklist(backend3.getId()));
     }
 
     @Test
@@ -185,8 +185,8 @@ public class StartSchedulingTest extends SchedulerTestBase {
         deployFuture.setRef(
                 mockFutureWithException(new ExecutionException("test execution exception", new Exception())));
         Assert.assertThrows("test execution exception", RpcException.class, () -> startScheduling(sql));
-        SimpleScheduler.removeFromBlacklist(backend3.getId());
-        Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> !SimpleScheduler.isInBlacklist(backend3.getId()));
+        SimpleScheduler.removeFromBlocklist(backend3.getId());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> !SimpleScheduler.isInBlocklist(backend3.getId()));
 
         isFirstFragmentToDeploy.set(true);
         deployFuture.setRef(mockFutureWithException(new InterruptedException("test interrupted exception")));
@@ -319,7 +319,7 @@ public class StartSchedulingTest extends SchedulerTestBase {
         // All the instances should be deployed.
         Assert.assertEquals(executionDAG.getInstances().size(), executionDAG.getExecutions().size());
 
-        scheduler.cancel();
+        scheduler.cancel("Cancel by test");
         Assert.assertEquals(numSuccessCancelledInstances, successCancelledInstanceIds.size());
         // Receive execution reports from the successfully cancelled instances.
         executionDAG.getExecutions().forEach(execution -> {
@@ -336,12 +336,12 @@ public class StartSchedulingTest extends SchedulerTestBase {
         // Shouldn't block by the failed cancelled instance.
         Assert.assertTrue(scheduler.isDone());
 
-        SimpleScheduler.removeFromBlacklist(BACKEND1_ID);
-        SimpleScheduler.removeFromBlacklist(backend2.getId());
-        SimpleScheduler.removeFromBlacklist(backend3.getId());
+        SimpleScheduler.removeFromBlocklist(BACKEND1_ID);
+        SimpleScheduler.removeFromBlocklist(backend2.getId());
+        SimpleScheduler.removeFromBlocklist(backend3.getId());
         Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() ->
-                !SimpleScheduler.isInBlacklist(BACKEND1_ID) && !SimpleScheduler.isInBlacklist(backend2.getId()) &&
-                        !SimpleScheduler.isInBlacklist(backend3.getId()));
+                !SimpleScheduler.isInBlocklist(BACKEND1_ID) && !SimpleScheduler.isInBlocklist(backend2.getId()) &&
+                        !SimpleScheduler.isInBlocklist(backend3.getId()));
     }
 
     private static Future<PExecPlanFragmentResult> mockFutureWithException(Exception exception) {

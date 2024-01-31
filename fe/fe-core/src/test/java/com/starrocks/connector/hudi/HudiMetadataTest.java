@@ -68,7 +68,7 @@ public class HudiMetadataTest {
         executorForPullFiles = Executors.newFixedThreadPool(5);
 
         client = new HiveMetastoreTest.MockedHiveMetaClient();
-        metastore = new HiveMetastore(client, "hive_catalog");
+        metastore = new HiveMetastore(client, "hive_catalog", MetastoreType.HMS);
         cachingHiveMetastore = CachingHiveMetastore.createCatalogLevelInstance(
                 metastore, executorForHmsRefresh, 100, 10, 1000, false);
         hmsOps = new HiveMetastoreOperations(cachingHiveMetastore, true, new Configuration(), MetastoreType.HMS, "hive_catalog");
@@ -107,6 +107,12 @@ public class HudiMetadataTest {
     public void testListTableNames() {
         List<String> databaseNames = hudiMetadata.listTableNames("db1");
         Assert.assertEquals(Lists.newArrayList("table1", "table2"), databaseNames);
+    }
+
+    @Test
+    public void testTableExists() {
+        boolean exists = hudiMetadata.tableExists("db1", "table1");
+        Assert.assertTrue(exists);
     }
 
     @Test

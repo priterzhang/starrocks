@@ -82,6 +82,13 @@ public class OlapTableFactory implements AbstractTableFactory {
     private OlapTableFactory() {
     }
 
+    private void analyzeLocationOnCreateTable(OlapTable table, Map<String, String> properties) {
+        String location = PropertyAnalyzer.analyzeLocation(properties, true);
+        if (location != null) {
+            table.setLocation(location);
+        }
+    }
+
     @Override
     @NotNull
     public Table createTable(LocalMetastore metastore, Database db, CreateTableStmt stmt) throws DdlException {
@@ -119,7 +126,8 @@ public class OlapTableFactory implements AbstractTableFactory {
                     partitionNameToId.put(desc.getPartitionName(), partitionId);
                 }
 
-                DynamicPartitionUtil.checkIfAutomaticPartitionAllowed(stmt.getProperties());
+                DynamicPartitionUtil.checkIfExpressionPartitionAllowed(stmt.getProperties(),
+                        expressionPartitionDesc.getExpr());
 
             } else {
                 throw new DdlException("Currently only support range or list partition with engine type olap");
@@ -186,7 +194,7 @@ public class OlapTableFactory implements AbstractTableFactory {
         long tableId = GlobalStateMgr.getCurrentState().getNextId();
         OlapTable table;
         // only OlapTable support light schema change so far
-        Boolean useLightSchemaChange = true;
+        Boolean useFastSchemaEvolution = true;
         if (stmt.isExternal()) {
             table = new ExternalOlapTable(db.getId(), tableId, tableName, baseSchema, keysType, partitionInfo,
                     distributionInfo, indexes, properties);
@@ -195,7 +203,7 @@ public class OlapTableFactory implements AbstractTableFactory {
                             ((ExternalOlapTable) table).getSourceTablePort())) {
                 throw new DdlException("can not create OLAP external table of self cluster");
             }
-            useLightSchemaChange = false;
+            useFastSchemaEvolution = false;
         } else if (stmt.isOlapEngine()) {
             RunMode runMode = RunMode.getCurrentRunMode();
             String volume = "";
@@ -213,8 +221,8 @@ public class OlapTableFactory implements AbstractTableFactory {
                     throw new DdlException(String.format("Storage volume %s not exists", volume));
                 }
                 String storageVolumeId = svm.getStorageVolumeIdOfTable(tableId);
-                metastore.setLakeStorageInfo(table, storageVolumeId, properties);
-                useLightSchemaChange = false;
+                metastore.setLakeStorageInfo(db, table, storageVolumeId, properties);
+                useFastSchemaEvolution = false;
             } else {
                 table = new OlapTable(tableId, tableName, baseSchema, keysType, partitionInfo, distributionInfo, indexes);
             }
@@ -231,14 +239,14 @@ public class OlapTableFactory implements AbstractTableFactory {
 
             // get use light schema change
             try {
-                useLightSchemaChange &= PropertyAnalyzer.analyzeUseLightSchemaChange(properties);
+                useFastSchemaEvolution &= PropertyAnalyzer.analyzeUseFastSchemaEvolution(properties);
             } catch (AnalysisException e) {
                 throw new DdlException(e.getMessage());
             }
             // only support olap table use light schema change optimization
-            table.setUseLightSchemaChange(useLightSchemaChange);
+            table.setUseFastSchemaEvolution(useFastSchemaEvolution);
             List<Integer> sortKeyUniqueIds = new ArrayList<>();
-            if (useLightSchemaChange) {
+            if (useFastSchemaEvolution) {
                 for (Column column : baseSchema) {
                     column.setUniqueId(table.incAndGetMaxColUniqueId());
                     LOG.debug("table: {}, newColumn: {}, uniqueId: {}", table.getName(), column.getName(),
@@ -250,7 +258,7 @@ public class OlapTableFactory implements AbstractTableFactory {
             } else {
                 LOG.debug("table: {} doesn't use light schema change", table.getName());
             }
-            
+
             // analyze bloom filter columns
             Set<String> bfColumns = null;
             double bfFpp = 0;
@@ -291,25 +299,30 @@ public class OlapTableFactory implements AbstractTableFactory {
                         ex.getMessage(), table.getName(), logReplicationNum));
             }
 
+            // analyze location property
+            analyzeLocationOnCreateTable(table, properties);
+
             // set in memory
             boolean isInMemory =
                     PropertyAnalyzer.analyzeBooleanProp(properties, PropertyAnalyzer.PROPERTIES_INMEMORY, false);
             table.setIsInMemory(isInMemory);
 
-            Pair<Boolean, Boolean> analyzeRet = PropertyAnalyzer.analyzeEnablePersistentIndex(properties, 
+            Pair<Boolean, Boolean> analyzeRet = PropertyAnalyzer.analyzeEnablePersistentIndex(properties,
                     table.getKeysType() == KeysType.PRIMARY_KEYS);
             boolean enablePersistentIndex = analyzeRet.first;
             boolean enablePersistentIndexByUser = analyzeRet.second;
             if (enablePersistentIndex && table.isCloudNativeTable()) {
                 // Judge there are whether compute nodes without storagePath or not.
                 // Cannot create cloud native table with persistent_index = true when ComputeNode without storagePath
-                Set<Long> cnUnSetStoragePath = GlobalStateMgr.getCurrentSystemInfo().getAvailableComputeNodeIds().
-                        stream().filter(id -> !GlobalStateMgr.getCurrentSystemInfo().getComputeNode(id).
-                                isSetStoragePath()).collect(Collectors.toSet());
+                Set<Long> cnUnSetStoragePath =
+                        GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getAvailableComputeNodeIds().
+                                stream()
+                                .filter(id -> !GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getComputeNode(id).
+                                        isSetStoragePath()).collect(Collectors.toSet());
                 if (cnUnSetStoragePath.size() != 0) {
                     if (enablePersistentIndexByUser) {
                         throw new DdlException("Cannot create cloud native table with persistent_index = true " +
-                            "when ComputeNode without storage_path, nodeId:" + cnUnSetStoragePath);
+                                "when ComputeNode without storage_path, nodeId:" + cnUnSetStoragePath);
                     } else {
                         // if user has not requested persistent index, switch it to false
                         table.setEnablePersistentIndex(false);
@@ -326,7 +339,7 @@ public class OlapTableFactory implements AbstractTableFactory {
             table.setEnablePersistentIndex(enablePersistentIndex);
 
             try {
-                table.setPrimaryIndexCacheExpireSec(PropertyAnalyzer.analyzePrimaryIndexCacheExpireSecProp(properties, 
+                table.setPrimaryIndexCacheExpireSec(PropertyAnalyzer.analyzePrimaryIndexCacheExpireSecProp(properties,
                         PropertyAnalyzer.PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC, 0));
             } catch (AnalysisException e) {
                 throw new DdlException(e.getMessage());
@@ -355,13 +368,15 @@ public class OlapTableFactory implements AbstractTableFactory {
             try {
                 long bucketSize = PropertyAnalyzer.analyzeLongProp(properties,
                         PropertyAnalyzer.PROPERTIES_BUCKET_SIZE, Config.default_automatic_bucket_size);
-                if (bucketSize > 0) {
+                if (bucketSize >= 0) {
                     table.setAutomaticBucketSize(bucketSize);
+                } else {
+                    throw new DdlException("Illegal bucket size: " + bucketSize);
                 }
             } catch (AnalysisException e) {
                 throw new DdlException(e.getMessage());
             }
-                    
+
             // write quorum
             try {
                 table.setWriteQuorum(PropertyAnalyzer.analyzeWriteQuorum(properties));
@@ -476,14 +491,13 @@ public class OlapTableFactory implements AbstractTableFactory {
                     throw new DdlException("random distribution does not support 'colocate_with'");
                 }
 
-                boolean addedToColocateGroup = colocateTableIndex.addTableToGroup(db, table,
-                        colocateGroup, false /* expectLakeTable */);
+                colocateTableIndex.addTableToGroup(db, table, colocateGroup, false /* expectLakeTable */);
             }
 
             // get base index storage type. default is COLUMN
-            TStorageType baseIndexStorageType = null;
+            TStorageType baseIndexStorageType;
             try {
-                baseIndexStorageType = PropertyAnalyzer.analyzeStorageType(properties);
+                baseIndexStorageType = PropertyAnalyzer.analyzeStorageType(properties, table);
             } catch (AnalysisException e) {
                 throw new DdlException(e.getMessage());
             }
@@ -514,7 +528,7 @@ public class OlapTableFactory implements AbstractTableFactory {
                 // get storage type for rollup index
                 TStorageType rollupIndexStorageType = null;
                 try {
-                    rollupIndexStorageType = PropertyAnalyzer.analyzeStorageType(addRollupClause.getProperties());
+                    rollupIndexStorageType = PropertyAnalyzer.analyzeStorageType(addRollupClause.getProperties(), table);
                 } catch (AnalysisException e) {
                     throw new DdlException(e.getMessage());
                 }
@@ -539,10 +553,13 @@ public class OlapTableFactory implements AbstractTableFactory {
             }
             Preconditions.checkNotNull(version);
 
-            // storage_format is not necessary, remove storage_format if exist.
+            // storage_format is not necessary, remove storage_format if exists.
             if (properties != null) {
                 properties.remove("storage_format");
             }
+
+            //storage type
+            table.setStorageType(baseIndexStorageType.name());
 
             // get compression type
             TCompressionType compressionType = TCompressionType.LZ4_FRAME;
@@ -658,15 +675,11 @@ public class OlapTableFactory implements AbstractTableFactory {
     private void processConstraint(
             Database db, OlapTable olapTable, Map<String, String> properties) throws AnalysisException {
         List<UniqueConstraint> uniqueConstraints = PropertyAnalyzer.analyzeUniqueConstraint(properties, db, olapTable);
-        if (uniqueConstraints != null) {
-            olapTable.setUniqueConstraints(uniqueConstraints);
-        }
+        olapTable.setUniqueConstraints(uniqueConstraints);
 
         List<ForeignKeyConstraint> foreignKeyConstraints =
                 PropertyAnalyzer.analyzeForeignKeyConstraint(properties, db, olapTable);
-        if (foreignKeyConstraints != null) {
-            olapTable.setForeignKeyConstraints(foreignKeyConstraints);
-        }
+        olapTable.setForeignKeyConstraints(foreignKeyConstraints);
     }
 
 }

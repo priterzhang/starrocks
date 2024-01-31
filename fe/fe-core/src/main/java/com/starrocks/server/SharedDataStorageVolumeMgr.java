@@ -23,6 +23,8 @@ import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.InvalidConfException;
 import com.starrocks.common.util.LogUtil;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.credential.CloudConfigurationConstants;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.storagevolume.StorageVolume;
@@ -327,16 +329,17 @@ public class SharedDataStorageVolumeMgr extends StorageVolumeMgr {
         List<List<Long>> bindings = new ArrayList<>();
         List<Long> tableBindings = new ArrayList<>();
         List<Long> dbBindings = new ArrayList<>();
-        List<Long> dbIds = GlobalStateMgr.getCurrentState().getDbIdsIncludeRecycleBin();
+        List<Long> dbIds = GlobalStateMgr.getCurrentState().getLocalMetastore().getDbIdsIncludeRecycleBin();
         for (Long dbId : dbIds) {
-            Database db = GlobalStateMgr.getCurrentState().getDbIncludeRecycleBin(dbId);
-            db.readLock();
+            Database db = GlobalStateMgr.getCurrentState().getLocalMetastore().getDbIncludeRecycleBin(dbId);
+            Locker locker = new Locker();
+            locker.lockDatabase(db, LockType.READ);
             if (dbToStorageVolume.containsKey(dbId)) {
                 continue;
             }
             dbBindings.add(dbId);
             try {
-                List<Table> tables = GlobalStateMgr.getCurrentState().getTablesIncludeRecycleBin(db);
+                List<Table> tables = GlobalStateMgr.getCurrentState().getLocalMetastore().getTablesIncludeRecycleBin(db);
                 for (Table table : tables) {
                     Long tableId = table.getId();
                     if (!tableToStorageVolume.containsKey(tableId) && table.isCloudNativeTableOrMaterializedView()) {
@@ -344,7 +347,7 @@ public class SharedDataStorageVolumeMgr extends StorageVolumeMgr {
                     }
                 }
             } finally {
-                db.readUnlock();
+                locker.unLockDatabase(db, LockType.READ);
             }
         }
         bindings.add(dbBindings);

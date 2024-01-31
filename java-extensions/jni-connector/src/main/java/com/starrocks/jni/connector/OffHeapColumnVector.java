@@ -16,8 +16,14 @@ package com.starrocks.jni.connector;
 
 import com.starrocks.utils.Platform;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -313,6 +319,32 @@ public class OffHeapColumnVector {
         return Platform.getDouble(null, data + rowId * 8L);
     }
 
+    public int appendDecimal(BigDecimal value) {
+        reserve(elementsAppended + 1);
+        putDecimal(elementsAppended, value);
+        return elementsAppended++;
+    }
+
+    private void putDecimal(int rowId, BigDecimal value) {
+        int typeSize = type.getPrimitiveTypeValueSize();
+        BigInteger dataValue = value.setScale(type.getScale(), RoundingMode.UNNECESSARY).unscaledValue();
+        byte[] bytes = changeByteOrder(dataValue.toByteArray());
+        byte[] newValue = new byte[typeSize];
+        if (dataValue.signum() == -1) {
+            Arrays.fill(newValue, (byte) -1);
+        }
+        System.arraycopy(bytes, 0, newValue, 0, Math.min(bytes.length, newValue.length));
+        Platform.copyMemory(newValue, Platform.BYTE_ARRAY_OFFSET, null, data + rowId * typeSize, typeSize);
+    }
+
+    public BigDecimal getDecimal(int rowId) {
+        int typeSize = type.getPrimitiveTypeValueSize();
+        byte[] bytes = new byte[typeSize];
+        Platform.copyMemory(null, data + (long) rowId * typeSize, bytes, Platform.BYTE_ARRAY_OFFSET, typeSize);
+        BigInteger value = new BigInteger(changeByteOrder(bytes));
+        return new BigDecimal(value, type.getScale());
+    }
+
     private void putBytes(int rowId, int count, byte[] src, int srcIndex) {
         Platform.copyMemory(src, Platform.BYTE_ARRAY_OFFSET + srcIndex, null, data + rowId, count);
     }
@@ -333,7 +365,7 @@ public class OffHeapColumnVector {
 
     public int appendString(String str) {
         byte[] bytes = str.getBytes(StandardCharsets.UTF_8);
-        return appendByteArray(bytes, 0, str.length());
+        return appendByteArray(bytes, 0, bytes.length);
     }
 
     public int appendBinary(byte[] binary) {
@@ -410,6 +442,19 @@ public class OffHeapColumnVector {
         return elementsAppended++;
     }
 
+    public int appendDate(LocalDate v) {
+        reserve(elementsAppended + 1);
+        int date = convertToDate(v.getYear(), v.getMonthValue(), v.getDayOfMonth());
+        return appendInt(date);
+    }
+
+    public int appendDateTime(LocalDateTime v) {
+        reserve(elementsAppended + 1);
+        long datetime = convertToDateTime(v.getYear(), v.getMonthValue(), v.getDayOfMonth(), v.getHour(),
+                v.getMinute(), v.getSecond(), v.getNano() / 1000);
+        return appendLong(datetime);
+    }
+
     public void updateMeta(OffHeapColumnVector meta) {
         if (type.isUnknown()) {
             meta.appendLong(0);
@@ -471,14 +516,21 @@ public class OffHeapColumnVector {
                 appendBinary(o.getBytes());
                 break;
             case STRING:
-            case DATE:
-            case DECIMAL:
                 appendString(o.getString(typeValue));
+                break;
+            case DATE:
+                appendDate(o.getDate());
+                break;
+            case DECIMALV2:
+            case DECIMAL32:
+            case DECIMAL64:
+            case DECIMAL128:
+                appendDecimal(o.getDecimal());
                 break;
             case DATETIME:
             case DATETIME_MICROS:
             case DATETIME_MILLIS:
-                appendString(o.getTimestamp(typeValue));
+                appendDateTime(o.getDateTime(typeValue));
                 break;
             case ARRAY: {
                 List<ColumnValue> values = new ArrayList<>();
@@ -561,8 +613,13 @@ public class OffHeapColumnVector {
             case DATETIME:
             case DATETIME_MICROS:
             case DATETIME_MILLIS:
-            case DECIMAL:
                 sb.append(getUTF8String(i));
+                break;
+            case DECIMALV2:
+            case DECIMAL32:
+            case DECIMAL64:
+            case DECIMAL128:
+                sb.append(getDecimal(i));
                 break;
             case ARRAY: {
                 int begin = getArrayOffset(i);
@@ -645,5 +702,51 @@ public class OffHeapColumnVector {
         } else {
             checker.check(context + "#data", data);
         }
+    }
+
+    public byte[] changeByteOrder(byte[] bytes) {
+        int length = bytes.length;
+        for (int i = 0; i < length / 2; ++i) {
+            byte temp = bytes[i];
+            bytes[i] = bytes[length - 1 - i];
+            bytes[length - 1 - i] = temp;
+        }
+        return bytes;
+    }
+
+    /**
+     * logical components in be: time_types.cpp, date::from_date
+     */
+    private int convertToDate(int year, int month, int day) {
+        int century;
+        int julianDate;
+
+        if (month > 2) {
+            month += 1;
+            year += 4800;
+        } else {
+            month += 13;
+            year += 4799;
+        }
+        century = year / 100;
+        julianDate = year * 365 - 32167;
+        julianDate += year / 4 - century + century / 4;
+        julianDate += 7834 * month / 256 + day;
+
+        return julianDate;
+    }
+
+    /**
+     * logical components in be: time_types.h, timestamp::from_datetime
+     */
+    private long convertToDateTime(int year, int month, int day, int hour, int minute, int second, int microsecond) {
+        int secsPerMinute = 60;
+        int minsPerHour = 60;
+        long usecsPerSec = 1000000;
+        int timeStampBits = 40;
+        long julianDate = convertToDate(year, month, day);
+        long timestamp = (((((hour * minsPerHour) + minute) * secsPerMinute) + second) * usecsPerSec)
+                + microsecond;
+        return julianDate << timeStampBits | timestamp;
     }
 }

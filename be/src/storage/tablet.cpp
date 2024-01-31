@@ -353,8 +353,9 @@ Status Tablet::add_rowset(const RowsetSharedPtr& rowset, bool need_persist) {
     modify_rowsets(std::vector<RowsetSharedPtr>(), rowsets_to_delete, nullptr);
 
     if (need_persist) {
-        Status res =
-                RowsetMetaManager::save(data_dir()->get_meta(), tablet_uid(), rowset->rowset_meta()->get_meta_pb());
+        RowsetMetaPB meta_pb;
+        rowset->rowset_meta()->get_full_meta_pb(&meta_pb);
+        Status res = RowsetMetaManager::save(data_dir()->get_meta(), tablet_uid(), meta_pb);
         LOG_IF(FATAL, !res.ok()) << "failed to save rowset " << rowset->rowset_id() << " to local meta store: " << res;
     }
     ++_newly_created_rowset_num;
@@ -564,7 +565,8 @@ Status Tablet::add_inc_rowset(const RowsetSharedPtr& rowset, int64_t version) {
         ASSIGN_OR_RETURN(need_binlog, _prepare_binlog_if_needed(rowset, version));
     }
 
-    auto& rowset_meta_pb = rowset->rowset_meta()->get_meta_pb();
+    RowsetMetaPB rowset_meta_pb;
+    rowset->rowset_meta()->get_full_meta_pb(&rowset_meta_pb);
     // No matter whether contains the version, the rowset meta should always be saved. TxnManager::publish_txn
     // will remove the in-memory txn information if Status::AlreadlyExist, but not the committed rowset meta
     // (RowsetStatePB = COMMITTED) saved in rocksdb. Here modify the rowset to visible, and save it again
@@ -1337,6 +1339,9 @@ void Tablet::get_compaction_status(std::string* json_result) {
 
 void Tablet::do_tablet_meta_checkpoint() {
     std::unique_lock store_lock(_meta_store_lock);
+    if (_will_be_force_replaced) {
+        return;
+    }
     if (_newly_created_rowset_num == 0) {
         return;
     }
@@ -1438,6 +1443,7 @@ void Tablet::build_tablet_report_info(TTabletInfo* tablet_info) {
     tablet_info->__set_path_hash(_data_dir->path_hash());
     tablet_info->__set_enable_persistent_index(_tablet_meta->get_enable_persistent_index());
     tablet_info->__set_primary_index_cache_expire_sec(_tablet_meta->get_primary_index_cache_expire_sec());
+    tablet_info->__set_tablet_schema_version(_max_version_schema->schema_version());
     if (_tablet_meta->get_binlog_config() != nullptr) {
         tablet_info->__set_binlog_config_version(_tablet_meta->get_binlog_config()->version);
     }
@@ -1634,6 +1640,7 @@ void Tablet::get_basic_info(TabletBasicInfo& info) {
     info.data_dir = data_dir()->path();
     info.shard_id = shard_id();
     info.schema_hash = schema_hash();
+    info.medium_type = data_dir()->storage_medium();
     if (_updates != nullptr) {
         _updates->get_basic_info_extra(info);
     } else {
@@ -1641,6 +1648,7 @@ void Tablet::get_basic_info(TabletBasicInfo& info) {
         info.max_version = _timestamped_version_tracker.get_max_continuous_version();
         info.min_version = _timestamped_version_tracker.get_min_readable_version();
         info.num_rowset = _tablet_meta->version_count();
+        info.num_segment = _tablet_meta->segment_count();
         info.num_row = _tablet_meta->num_rows();
         info.data_size = _tablet_meta->tablet_footprint();
     }
@@ -1719,8 +1727,9 @@ const TabletSchemaCSPtr Tablet::thread_safe_get_tablet_schema() const {
     return _max_version_schema;
 }
 
-void Tablet::update_max_version_schema(const TabletSchemaCSPtr& tablet_schema) {
-    std::lock_guard wrlock(_schema_lock);
+TabletSchemaCSPtr Tablet::update_max_version_schema(const TabletSchemaCSPtr& tablet_schema) {
+    std::lock_guard l0(_meta_lock);
+    std::lock_guard l1(_schema_lock);
     // Double Check for concurrent update
     if (!_max_version_schema || tablet_schema->schema_version() > _max_version_schema->schema_version()) {
         if (tablet_schema->id() == TabletSchema::invalid_id()) {
@@ -1729,7 +1738,9 @@ void Tablet::update_max_version_schema(const TabletSchemaCSPtr& tablet_schema) {
             _max_version_schema = GlobalTabletSchemaMap::Instance()->emplace(tablet_schema).first;
         }
     }
+
     _tablet_meta->save_tablet_schema(_max_version_schema, _data_dir);
+    return _max_version_schema;
 }
 
 const TabletSchema& Tablet::unsafe_tablet_schema_ref() const {

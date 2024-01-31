@@ -23,7 +23,6 @@ import com.starrocks.common.DdlException;
 import com.starrocks.common.Pair;
 import com.starrocks.mysql.MysqlPassword;
 import com.starrocks.mysql.privilege.AuthPlugin;
-import com.starrocks.mysql.privilege.Password;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
 import com.starrocks.persist.metablock.SRMetaBlockException;
 import com.starrocks.persist.metablock.SRMetaBlockID;
@@ -41,7 +40,6 @@ import com.starrocks.sql.ast.UserIdentity;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -83,7 +81,7 @@ public class AuthenticationMgr {
                     return compareByHost;
                 }
                 // compare user name
-                return o1.getQualifiedUser().compareTo(o2.getQualifiedUser());
+                return o1.getUser().compareTo(o2.getUser());
             });
         }
 
@@ -145,7 +143,7 @@ public class AuthenticationMgr {
         info.setAuthPlugin(PlainPasswordAuthenticationProvider.PLUGIN_NAME);
         info.setPassword(MysqlPassword.EMPTY_PASSWORD);
         userToAuthenticationInfo.put(UserIdentity.ROOT, info);
-        userNameToProperty.put(UserIdentity.ROOT.getQualifiedUser(), new UserProperty());
+        userNameToProperty.put(UserIdentity.ROOT.getUser(), new UserProperty());
     }
 
     private void readLock() {
@@ -302,7 +300,7 @@ public class AuthenticationMgr {
         if (Config.enable_password_reuse) {
             return;
         }
-        if (checkPlainPassword(user.getQualifiedUser(), user.getHost(), plainPassword) != null) {
+        if (checkPlainPassword(user.getUser(), user.getHost(), plainPassword) != null) {
             throw new DdlException("password should not be the same as the previous one!");
         }
     }
@@ -322,9 +320,9 @@ public class AuthenticationMgr {
             userToAuthenticationInfo.put(userIdentity, info);
 
             UserProperty userProperty = null;
-            if (!userNameToProperty.containsKey(userIdentity.getQualifiedUser())) {
+            if (!userNameToProperty.containsKey(userIdentity.getUser())) {
                 userProperty = new UserProperty();
-                userNameToProperty.put(userIdentity.getQualifiedUser(), userProperty);
+                userNameToProperty.put(userIdentity.getUser(), userProperty);
             }
             GlobalStateMgr globalStateMgr = GlobalStateMgr.getCurrentState();
             AuthorizationMgr authorizationManager = globalStateMgr.getAuthorizationMgr();
@@ -488,7 +486,7 @@ public class AuthenticationMgr {
         userToAuthenticationInfo.remove(userIdentity);
         LOG.info("user {} is dropped", userIdentity);
         // 2. remove from userNameToProperty
-        String userName = userIdentity.getQualifiedUser();
+        String userName = userIdentity.getUser();
         if (!hasUserNameNoLock(userName)) {
             LOG.info("user property for {} is dropped: {}", userName, userNameToProperty.get(userName));
             userNameToProperty.remove(userName);
@@ -508,7 +506,7 @@ public class AuthenticationMgr {
             info.analyze();
             updateUserNoLock(userIdentity, info, false);
             if (userProperty != null) {
-                userNameToProperty.put(userIdentity.getQualifiedUser(), userProperty);
+                userNameToProperty.put(userIdentity.getUser(), userProperty);
             }
 
             GlobalStateMgr globalStateMgr = GlobalStateMgr.getCurrentState();
@@ -524,11 +522,11 @@ public class AuthenticationMgr {
             throws AuthenticationException {
         if (userToAuthenticationInfo.containsKey(userIdentity)) {
             if (!shouldExists) {
-                throw new AuthenticationException("user " + userIdentity.getQualifiedUser() + " already exists");
+                throw new AuthenticationException("user " + userIdentity.getUser() + " already exists");
             }
         } else {
             if (shouldExists) {
-                throw new AuthenticationException("failed to find user " + userIdentity.getQualifiedUser());
+                throw new AuthenticationException("failed to find user " + userIdentity.getUser());
             }
         }
         userToAuthenticationInfo.put(userIdentity, info);
@@ -536,7 +534,7 @@ public class AuthenticationMgr {
 
     private boolean hasUserNameNoLock(String userName) {
         for (UserIdentity userIdentity : userToAuthenticationInfo.keySet()) {
-            if (userIdentity.getQualifiedUser().equals(userName)) {
+            if (userIdentity.getUser().equals(userName)) {
                 return true;
             }
         }
@@ -570,92 +568,6 @@ public class AuthenticationMgr {
         }
     }
 
-    /**
-     * Use new image format by SRMetaBlockWriter/SRMetaBlockReader
-     * <p>
-     * +------------------+
-     * |     header       |
-     * +------------------+
-     * |                  |
-     * |  Authentication  |
-     * |     Manager      |
-     * |                  |
-     * +------------------+
-     * |     numUser      |
-     * +------------------+
-     * | User Identify 1  |
-     * +------------------+
-     * |      User        |
-     * |  Authentication  |
-     * |     Info 1       |
-     * +------------------+
-     * | User Identify 2  |
-     * +------------------+
-     * |      User        |
-     * |  Authentication  |
-     * |     Info 2       |
-     * +------------------+
-     * |       ...        |
-     * +------------------+
-     * |      footer      |
-     * +------------------+
-     */
-    public void save(DataOutputStream dos) throws IOException {
-        try {
-            // 1 json for myself,1 json for number of users, 2 json for each user(kv)
-            final int cnt = 1 + 1 + userToAuthenticationInfo.size() * 2;
-            SRMetaBlockWriter writer = new SRMetaBlockWriter(dos, "com.starrocks.authentication.AuthenticationManager", cnt);
-            // 1 json for myself
-            writer.writeJson(this);
-            // 1 json for num user
-            writer.writeJson(userToAuthenticationInfo.size());
-            for (Map.Entry<UserIdentity, UserAuthenticationInfo> entry : userToAuthenticationInfo.entrySet()) {
-                // 2 json for each user(kv)
-                writer.writeJson(entry.getKey());
-                writer.writeJson(entry.getValue());
-            }
-            LOG.info("saved {} users", userToAuthenticationInfo.size());
-            writer.close();
-        } catch (SRMetaBlockException e) {
-            IOException exception = new IOException("failed to save AuthenticationManager!");
-            exception.initCause(e);
-            throw exception;
-        }
-    }
-
-    public static AuthenticationMgr load(DataInputStream dis) throws IOException, DdlException {
-        try {
-            SRMetaBlockReader reader = new SRMetaBlockReader(dis, "com.starrocks.authentication.AuthenticationManager");
-            AuthenticationMgr ret = null;
-            try {
-                // 1 json for myself
-                ret = reader.readJson(AuthenticationMgr.class);
-                ret.userToAuthenticationInfo = new UserAuthInfoTreeMap();
-                // 1 json for num user
-                int numUser = reader.readJson(int.class);
-                LOG.info("loading {} users", numUser);
-                for (int i = 0; i != numUser; ++i) {
-                    // 2 json for each user(kv)
-                    UserIdentity userIdentity = reader.readJson(UserIdentity.class);
-                    UserAuthenticationInfo userAuthenticationInfo = reader.readJson(UserAuthenticationInfo.class);
-                    userAuthenticationInfo.analyze();
-                    ret.userToAuthenticationInfo.put(userIdentity, userAuthenticationInfo);
-                }
-            } catch (SRMetaBlockEOFException eofException) {
-                LOG.warn("got EOF exception, ignore, ", eofException);
-            } finally {
-                reader.close();
-            }
-            assert ret != null; // can't be NULL
-            LOG.info("loaded {} users", ret.userToAuthenticationInfo.size());
-            // mark data is loaded
-            ret.isLoaded = true;
-            return ret;
-        } catch (SRMetaBlockException | AuthenticationException e) {
-            throw new DdlException("failed to load AuthenticationManager!", e);
-        }
-    }
-
     public boolean isLoaded() {
         return isLoaded;
     }
@@ -664,32 +576,12 @@ public class AuthenticationMgr {
         isLoaded = loaded;
     }
 
-    /**
-     * these public interfaces are for AuthUpgrader to upgrade from 2.x
-     */
-    public void upgradeUserUnlocked(UserIdentity userIdentity, Password password) throws AuthenticationException {
-        AuthPlugin plugin = password.getAuthPlugin();
-        if (plugin == null) {
-            plugin = AuthPlugin.MYSQL_NATIVE_PASSWORD;
-        }
-        AuthenticationProvider provider = AuthenticationProviderFactory.create(plugin.toString());
-        UserAuthenticationInfo info = provider.upgradedFromPassword(userIdentity, password);
-        userToAuthenticationInfo.put(userIdentity, info);
-        LOG.info("upgrade user {}", userIdentity);
-    }
-
     public UserAuthenticationInfo getUserAuthenticationInfoByUserIdentity(UserIdentity userIdentity) {
         return userToAuthenticationInfo.get(userIdentity);
     }
 
     public Map<UserIdentity, UserAuthenticationInfo> getUserToAuthenticationInfo() {
         return userToAuthenticationInfo;
-    }
-
-    public void upgradeUserProperty(String userName, long maxConn) {
-        UserProperty userProperty = new UserProperty();
-        userProperty.setMaxConn(maxConn);
-        userNameToProperty.put(userName, new UserProperty());
     }
 
     private Class<?> authClazz = null;

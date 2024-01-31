@@ -21,8 +21,14 @@ namespace java com.starrocks.thrift
 include "Metrics.thrift"
 
 enum TCounterAggregateType {
+    // Use sum for both be and fe phases
     SUM,
+    // Use avg for both be and fe phases
     AVG,
+    // Use sum at be phase and avg at fe phase 
+    SUM_AVG,
+    // Use avg at be phase and sum at fe phase
+    AVG_SUM,
 }
 
 enum TCounterMergeType {
@@ -32,10 +38,16 @@ enum TCounterMergeType {
     SKIP_SECOND_MERGE,
 }
 
+enum TCounterMinMaxType {
+  MIN_MAX_ALL = 0,
+  SKIP_ALL = 1
+}
+
 struct TCounterStrategy {
     1: required TCounterAggregateType aggregate_type
     2: required TCounterMergeType merge_type
     3: required i64 display_threshold = 0
+    4: optional TCounterMinMaxType min_max_type = TCounterMinMaxType.MIN_MAX_ALL
 }
 
 // Counter data

@@ -165,6 +165,7 @@ public:
     HdfsPartitionDescriptor(const THdfsTable& thrift_table, const THdfsPartition& thrift_partition);
     HdfsPartitionDescriptor(const THudiTable& thrift_table, const THdfsPartition& thrift_partition);
     HdfsPartitionDescriptor(const TDeltaLakeTable& thrift_table, const THdfsPartition& thrift_partition);
+    HdfsPartitionDescriptor(const TIcebergTable& thrift_table, const THdfsPartition& thrift_partition);
 
     int64_t id() const { return _id; }
     THdfsFileFormat::type file_format() { return _file_format; }
@@ -192,6 +193,8 @@ public:
     virtual bool is_partition_col(const SlotDescriptor* slot) const;
     virtual int get_partition_col_index(const SlotDescriptor* slot) const;
     virtual HdfsPartitionDescriptor* get_partition(int64_t partition_id) const;
+    virtual bool has_base_path() const { return false; }
+    virtual const std::string& get_base_path() const { return _table_location; }
 
     Status create_key_exprs(RuntimeState* state, ObjectPool* pool, int32_t chunk_size) {
         for (auto& part : _partition_id_to_desc_map) {
@@ -199,6 +202,9 @@ public:
         }
         return Status::OK();
     }
+
+    StatusOr<TPartitionMap*> deserialize_partition_map(const TCompressedPartitionMap& compressed_partition_map,
+                                                       ObjectPool* pool);
 
 protected:
     std::string _hdfs_base_path;
@@ -213,6 +219,20 @@ public:
     HdfsTableDescriptor(const TTableDescriptor& tdesc, ObjectPool* pool);
     ~HdfsTableDescriptor() override = default;
     bool has_partition() const override { return true; }
+    const std::string& get_hive_column_names() const;
+    const std::string& get_hive_column_types() const;
+    const std::string& get_input_format() const;
+    const std::string& get_serde_lib() const;
+    const std::map<std::string, std::string> get_serde_properties() const;
+    const std::string& get_time_zone() const;
+
+private:
+    std::string _serde_lib;
+    std::string _input_format;
+    std::string _hive_column_names;
+    std::string _hive_column_types;
+    std::map<std::string, std::string> _serde_properties;
+    std::string _time_zone;
 };
 
 class IcebergTableDescriptor : public HiveTableDescriptor {
@@ -225,6 +245,9 @@ public:
     const std::vector<std::string>& partition_column_names() { return _partition_column_names; }
     const std::vector<std::string> full_column_names();
     std::vector<int32_t> partition_index_in_schema();
+    bool has_base_path() const override { return true; }
+
+    Status set_partition_desc_map(const TIcebergTable& thrift_table, ObjectPool* pool);
 
 private:
     TIcebergSchema _t_iceberg_schema;
@@ -236,6 +259,19 @@ public:
     FileTableDescriptor(const TTableDescriptor& tdesc, ObjectPool* pool);
     ~FileTableDescriptor() override = default;
     bool has_partition() const override { return false; }
+    const std::string& get_table_locations() const;
+    const std::string& get_hive_column_names() const;
+    const std::string& get_hive_column_types() const;
+    const std::string& get_input_format() const;
+    const std::string& get_serde_lib() const;
+    const std::string& get_time_zone() const;
+
+private:
+    std::string _serde_lib;
+    std::string _input_format;
+    std::string _hive_column_names;
+    std::string _hive_column_types;
+    std::string _time_zone;
 };
 
 class DeltaLakeTableDescriptor : public HiveTableDescriptor {
@@ -250,12 +286,12 @@ public:
     HudiTableDescriptor(const TTableDescriptor& tdesc, ObjectPool* pool);
     ~HudiTableDescriptor() override = default;
     bool has_partition() const override { return true; }
-    const std::string& get_base_path() const;
     const std::string& get_instant_time() const;
     const std::string& get_hive_column_names() const;
     const std::string& get_hive_column_types() const;
     const std::string& get_input_format() const;
     const std::string& get_serde_lib() const;
+    const std::string& get_time_zone() const;
 
 private:
     std::string _hudi_instant_time;
@@ -263,6 +299,7 @@ private:
     std::string _hive_column_types;
     std::string _input_format;
     std::string _serde_lib;
+    std::string _time_zone;
 };
 
 class PaimonTableDescriptor : public HiveTableDescriptor {
@@ -270,18 +307,27 @@ public:
     PaimonTableDescriptor(const TTableDescriptor& tdesc, ObjectPool* pool);
     ~PaimonTableDescriptor() override = default;
     bool has_partition() const override { return false; }
-    const std::string& get_catalog_type() const;
-    const std::string& get_metastore_uri() const;
-    const std::string& get_warehouse_path() const;
-    const std::string& get_database_name() const;
-    const std::string& get_table_name() const;
+    const std::string& get_paimon_native_table() const;
+    const std::string& get_time_zone() const;
 
 private:
-    std::string _catalog_type;
-    std::string _metastore_uri;
-    std::string _warehouse_path;
+    std::string _paimon_native_table;
+    std::string _time_zone;
+};
+
+class OdpsTableDescriptor : public HiveTableDescriptor {
+public:
+    OdpsTableDescriptor(const TTableDescriptor& tdesc, ObjectPool* pool);
+    ~OdpsTableDescriptor() override = default;
+    bool has_partition() const override { return false; }
+    const std::string& get_database_name() const;
+    const std::string& get_table_name() const;
+    const std::string& get_time_zone() const;
+
+private:
     std::string _database_name;
     std::string _table_name;
+    std::string _time_zone;
 };
 
 // ===========================================

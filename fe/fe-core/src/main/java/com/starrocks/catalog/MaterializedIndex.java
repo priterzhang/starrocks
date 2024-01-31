@@ -198,7 +198,7 @@ public class MaterializedIndex extends MetaObject implements Writable, GsonPostP
         idToTablets.put(tablet.getId(), tablet);
         tablets.add(tablet);
         if (updateInvertedIndex) {
-            GlobalStateMgr.getCurrentInvertedIndex().addTablet(tablet.getId(), tabletMeta);
+            GlobalStateMgr.getCurrentState().getTabletInvertedIndex().addTablet(tablet.getId(), tabletMeta);
         }
     }
 
@@ -232,6 +232,14 @@ public class MaterializedIndex extends MetaObject implements Writable, GsonPostP
             dataSize += tablet.getDataSize(false);
         }
         return dataSize;
+    }
+
+    public long getTabletMaxDataSize() {
+        long maxDataSize = 0;
+        for (Tablet tablet : getTablets()) {
+            maxDataSize = Math.max(maxDataSize, tablet.getDataSize(true));
+        }
+        return maxDataSize;
     }
 
     public long getReplicaCount() {

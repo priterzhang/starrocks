@@ -101,26 +101,25 @@ private:
         Datum v = column.get(index);
         const auto& items = v.get<DatumArray>();
 
-        for (const auto& item : items) {
-            if (item.is_null()) {
-                has_null = true;
-            } else {
-                hash_set->emplace(item.get<CppType>());
-            }
-        }
-
         auto& dest_data_column = dest_column->elements_column();
         auto& dest_offsets = dest_column->offsets_column()->get_data();
 
-        if (has_null) {
-            dest_data_column->append_nulls(1);
+        for (const auto& item : items) {
+            if (item.is_null()) {
+                if (!has_null) {
+                    dest_data_column->append_nulls(1);
+                    has_null = true;
+                }
+                continue;
+            }
+
+            const auto& tt = item.get<CppType>();
+            if (hash_set->count(tt) == 0) {
+                hash_set->emplace(tt);
+                dest_data_column->append_datum(tt);
+            }
         }
 
-        auto iter = hash_set->begin();
-        while (iter != hash_set->end()) {
-            dest_data_column->append_datum(*iter);
-            ++iter;
-        }
         dest_offsets.emplace_back(dest_offsets.back() + hash_set->size() + has_null);
     }
 };
@@ -772,7 +771,7 @@ private:
 class ArrayJoin {
 public:
     static ColumnPtr process(FunctionContext* ctx, const Columns& columns) {
-        // TODO: optimize the performace of const sep or const null replace str
+        // TODO: optimize the performance of const sep or const null replace str
         DCHECK_GE(columns.size(), 2);
         size_t chunk_size = columns[0]->size();
 
@@ -790,7 +789,7 @@ private:
     static ColumnPtr _join_column_replace_null(const ColumnPtr& src_column, const ColumnPtr& sep_column,
                                                const ColumnPtr& null_replace_column, size_t chunk_size) {
         NullableBinaryColumnBuilder res;
-        // byte_size may be smaller or larger then actual used size
+        // byte_size may be smaller or larger than actual used size
         // byte_size is only one reserve size
         size_t byte_size = ColumnHelper::get_data_column(src_column.get())->byte_size() +
                            ColumnHelper::get_data_column(sep_column.get())->byte_size(0) * src_column->size() +
@@ -803,8 +802,8 @@ private:
                 res.set_null(i);
                 continue;
             }
-            auto datum = src_column->get(i);
-            const auto& datum_array = datum.get_array();
+            auto tmp_datum = src_column->get(i);
+            const auto& datum_array = tmp_datum.get_array();
             bool append = false;
             Slice sep_slice = sep_column->get(i).get_slice();
             Slice null_slice = null_replace_column->get(i).get_slice();
@@ -840,8 +839,8 @@ private:
                 continue;
             }
 
-            auto datum = src_column->get(i);
-            const auto& datum_array = datum.get_array();
+            auto tmp_datum = src_column->get(i);
+            const auto& datum_array = tmp_datum.get_array();
             bool append = false;
             Slice sep_slice = sep_column->get(i).get_slice();
             for (const auto& datum : datum_array) {
@@ -1166,7 +1165,7 @@ public:
         if constexpr (HasNull) {
             elements_nulls = elements_null_col->get_data().data();
         }
-        auto* elements_data = down_cast<const RunTimeColumnType<ElementType>*>(elements)->get_data().data();
+        const auto& elements_data = GetContainer<ElementType>().get_data(elements);
 
         auto* offsets_ptr = offsets->get_data().data();
         auto* null_ptr = null_cols->get_data().data();
@@ -1222,7 +1221,7 @@ public:
                 }
 
                 has_data = true;
-                auto& value = elements_data[offset + index];
+                const auto& value = elements_data[offset + index];
                 if constexpr (isMin) {
                     result = result < value ? result : value;
                 } else {
@@ -1427,7 +1426,7 @@ private:
     }
 };
 
-// Todo:support datatime/data
+// Todo:support datetime/date
 template <LogicalType Type>
 class ArrayGenerate {
 public:

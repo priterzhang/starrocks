@@ -103,7 +103,7 @@ public class HiveMetadataTest {
         executorForPullFiles = Executors.newFixedThreadPool(5);
 
         client = new HiveMetastoreTest.MockedHiveMetaClient();
-        metastore = new HiveMetastore(client, "hive_catalog");
+        metastore = new HiveMetastore(client, "hive_catalog", MetastoreType.HMS);
         cachingHiveMetastore = CachingHiveMetastore.createCatalogLevelInstance(
                 metastore, executorForHmsRefresh, 100, 10, 1000, false);
         hmsOps = new HiveMetastoreOperations(cachingHiveMetastore, true, new Configuration(), MetastoreType.HMS, "hive_catalog");
@@ -174,11 +174,17 @@ public class HiveMetadataTest {
     }
 
     @Test
+    public void testTableExists() {
+        boolean exists = hiveMetadata.tableExists("db1", "tbl1");
+        Assert.assertTrue(exists);
+    }
+
+    @Test
     public void testGetHiveRemoteFiles() throws AnalysisException {
         FeConstants.runningUnitTest = true;
         String tableLocation = "hdfs://127.0.0.1:10000/hive.db/hive_tbl";
         HiveMetaClient client = new HiveMetastoreTest.MockedHiveMetaClient();
-        HiveMetastore metastore = new HiveMetastore(client, "hive_catalog");
+        HiveMetastore metastore = new HiveMetastore(client, "hive_catalog", null);
         List<String> partitionNames = Lists.newArrayList("col1=1", "col1=2");
         Map<String, Partition> partitions = metastore.getPartitionsByNames("db1", "table1", partitionNames);
         HiveTable hiveTable = (HiveTable) hiveMetadata.getTable("db1", "table1");
@@ -359,6 +365,21 @@ public class HiveMetadataTest {
         tSinkCommitInfo.setHive_file_info(fileInfo);
         hiveMetadata.finishSink("hive_db", "hive_table", Lists.newArrayList());
         hiveMetadata.finishSink("hive_db", "hive_table", Lists.newArrayList(tSinkCommitInfo));
+    }
+
+    @Test
+    public void testAbortSink() {
+        TSinkCommitInfo tSinkCommitInfo = new TSinkCommitInfo();
+        hiveMetadata.abortSink("hive_db", "hive_table", Lists.newArrayList());
+        hiveMetadata.abortSink("hive_db", "hive_table", Lists.newArrayList(tSinkCommitInfo));
+
+        THiveFileInfo fileInfo = new THiveFileInfo();
+        fileInfo.setFile_name("myfile.parquet");
+        fileInfo.setPartition_path("hdfs://127.0.0.1:10000/tmp/starrocks/queryid/col1=2");
+        fileInfo.setRecord_count(10);
+        fileInfo.setFile_size_in_bytes(100);
+        tSinkCommitInfo.setHive_file_info(fileInfo);
+        hiveMetadata.abortSink("hive_db", "hive_table", Lists.newArrayList(tSinkCommitInfo));
     }
 
     @Test(expected = StarRocksConnectorException.class)

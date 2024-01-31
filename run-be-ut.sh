@@ -39,7 +39,8 @@ Usage: $0 <options>
      --with-aws                     enable to test aws
      --with-bench                   enable to build with benchmark
      --module                       module to run uts
-     --use-staros                   enable to build with staros
+     --enable-shared-data           enable to build with shared-data feature support
+     --use-staros                   DEPRECATED. an alias of --enable-shared-data option
      -j                             build parallel
 
   Eg.
@@ -50,6 +51,23 @@ Usage: $0 <options>
     $0 --help                       display usage
   "
   exit 1
+}
+
+# Append negative cases to existing $TEST_NAME
+# refer to https://github.com/google/googletest/blob/main/docs/advanced.md#running-a-subset-of-the-tests
+# for detailed explaination of `--gtest_filter`
+append_negative_case() {
+    local exclude_case=$1
+    case $TEST_NAME in
+      *-*)
+        # already has negative cases, just append the cases to the end
+        TEST_NAME=${TEST_NAME}:$exclude_case
+        ;;
+      *)
+        # doesn't have negative cases, start the negative session
+        TEST_NAME=${TEST_NAME}-$exclude_case
+        ;;
+    esac
 }
 
 # -l run and -l gtest_filter only used for compatibility
@@ -64,6 +82,7 @@ OPTS=$(getopt \
   -l 'with-aws' \
   -l 'with-bench' \
   -l 'use-staros' \
+  -l 'enable-shared-data' \
   -o 'j:' \
   -l 'help' \
   -l 'run' \
@@ -95,7 +114,7 @@ while true; do
         --help) HELP=1 ; shift ;;
         --with-aws) WITH_AWS=ON; shift ;;
         --with-gcov) WITH_GCOV=ON; shift ;;
-        --use-staros) USE_STAROS=ON; shift ;;
+        --enable-shared-data|--use-staros) USE_STAROS=ON; shift ;;
         -j) PARALLEL=$2; shift 2 ;;
         --) shift ;  break ;;
         *) echo "Internal error" ; exit 1 ;;
@@ -151,12 +170,6 @@ if [ "${USE_STAROS}" == "ON"  ]; then
   export STARLET_INSTALL_DIR
 fi
 
-# Temporarily keep the default behavior same as before to avoid frequent thirdparty update.
-# Once the starcache version is stable, we will turn on it by default.
-if [[ -z ${WITH_STARCACHE} ]]; then
-  WITH_STARCACHE=${USE_STAROS}
-fi
-
 ${CMAKE_CMD}  -G "${CMAKE_GENERATOR}" \
             -DSTARROCKS_THIRDPARTY=${STARROCKS_THIRDPARTY}\
             -DSTARROCKS_HOME=${STARROCKS_HOME} \
@@ -167,7 +180,6 @@ ${CMAKE_CMD}  -G "${CMAKE_GENERATOR}" \
             -DSTARLET_INSTALL_DIR=${STARLET_INSTALL_DIR}          \
             -DWITH_GCOV=${WITH_GCOV} \
             -DWITH_CACHELIB=${WITH_CACHELIB} \
-            -DWITH_STARCACHE=${WITH_STARCACHE} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ../
 
 ${BUILD_SYSTEM} -j${PARALLEL}
@@ -219,6 +231,14 @@ if [ "${WITH_CACHELIB}" == "ON"  ]; then
     export LD_LIBRARY_PATH=$CACHELIB_DIR/lib:$CACHELIB_DIR/lib64:$CACHELIB_DIR/deps/lib:$CACHELIB_DIR/deps/lib64:$LD_LIBRARY_PATH
 fi
 
+THIRDPARTY_HADOOP_HOME=${STARROCKS_THIRDPARTY}/installed/hadoop/share/hadoop
+if [[ -d ${THIRDPARTY_HADOOP_HOME} ]] ; then
+    export HADOOP_CLASSPATH=${THIRDPARTY_HADOOP_HOME}/common/*:${THIRDPARTY_HADOOP_HOME}/common/lib/*:${THIRDPARTY_HADOOP_HOME}/hdfs/*:${THIRDPARTY_HADOOP_HOME}/hdfs/lib/*
+else
+    # exclude HdfsFileSystemTest related test case if no hadoop env found
+    echo "[INFO] Can't find available HADOOP common lib, disable HdfsFileSystemTest related test!"
+    append_negative_case "HdfsFileSystemTest*"
+fi
 # HADOOP_CLASSPATH defined in $STARROCKS_HOME/conf/hadoop_env.sh
 # put $STARROCKS_HOME/conf ahead of $HADOOP_CLASSPATH so that custom config can replace the config in $HADOOP_CLASSPATH
 export CLASSPATH=$STARROCKS_HOME/conf:$HADOOP_CLASSPATH:$CLASSPATH
@@ -226,9 +246,10 @@ export CLASSPATH=$STARROCKS_HOME/conf:$HADOOP_CLASSPATH:$CLASSPATH
 # ===========================================================
 
 export STARROCKS_TEST_BINARY_DIR=${STARROCKS_TEST_BINARY_DIR}/test
+export ASAN_OPTIONS="abort_on_error=1:disable_coredump=0:unmap_shadow_on_exit=1:detect_stack_use_after_return=1"
 
 if [ $WITH_AWS = "OFF" ]; then
-    TEST_NAME="$TEST_NAME*:-*S3*"
+    append_negative_case "*S3*"
 fi
 
 # prepare util test_data
@@ -242,6 +263,7 @@ test_files=`find ${STARROCKS_TEST_BINARY_DIR} -type f -perm -111 -name "*test" \
     | grep -v bench_test \
     | grep -e "$TEST_MODULE" `
 
+echo "[INFO] gtest_filter: $TEST_NAME"
 # run cases in starrocks_test in parallel if has gtest-parallel script.
 # reference: https://github.com/google/gtest-parallel
 if [[ $TEST_MODULE == '.*'  || $TEST_MODULE == 'starrocks_test' ]]; then

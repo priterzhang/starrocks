@@ -50,15 +50,19 @@ import com.starrocks.common.AnalysisException;
 import com.starrocks.common.TreeNode;
 import com.starrocks.common.UserException;
 import com.starrocks.sql.common.PermutationGenerator;
+import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
+import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
 import com.starrocks.sql.optimizer.statistics.Statistics;
+import com.starrocks.sql.optimizer.transformer.SqlToScalarOperatorTranslator;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.TNormalPlanNode;
 import com.starrocks.thrift.TPlan;
 import com.starrocks.thrift.TPlanNode;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
+import org.roaringbitmap.RoaringBitmap;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -562,6 +566,9 @@ abstract public class PlanNode extends TreeNode<PlanNode> {
     }
 
     public void computeStatistics(Statistics statistics) {
+        if (null == statistics) {
+            return;
+        }
         cardinality = Math.round(statistics.getOutputRowCount());
         avgRowSize = (float) statistics.getColumnStatistics().values().stream().
                 mapToDouble(columnStatistic -> columnStatistic.getAverageRowSize()).sum();
@@ -827,12 +834,25 @@ abstract public class PlanNode extends TreeNode<PlanNode> {
         }
         return false;
     }
+
     protected Function<Expr, Boolean> couldBound(RuntimeFilterDescription rfDesc, DescriptorTable descTbl) {
-        return (Expr expr) -> couldBound(expr ,rfDesc, descTbl);
+        return (Expr expr) -> couldBound(expr, rfDesc, descTbl);
     }
 
     protected Function<Expr, Boolean> couldBoundForPartitionExpr() {
         return (Expr expr) -> expr.isBoundByTupleIds(getTupleIds());
+    }
+
+    private RoaringBitmap cachedSlotIds = null;
+
+    public RoaringBitmap getSlotIds(DescriptorTable descTbl) {
+        if (cachedSlotIds == null) {
+            cachedSlotIds = new RoaringBitmap();
+            getTupleIds().stream().map(descTbl::getTupleDesc)
+                    .flatMap(tupleDesc -> tupleDesc.getSlots().stream().map(SlotDescriptor::getId))
+                    .map(SlotId::asInt).forEach(cachedSlotIds::add);
+        }
+        return cachedSlotIds;
     }
 
     protected boolean couldBound(Expr probeExpr, RuntimeFilterDescription rfDesc, DescriptorTable descTbl) {
@@ -841,16 +861,34 @@ abstract public class PlanNode extends TreeNode<PlanNode> {
             SlotRef slotRef = (SlotRef) probeExpr;
             for (TupleId tupleId : getTupleIds()) {
                 for (SlotDescriptor slot : descTbl.getTupleDesc(tupleId).getSlots()) {
-                    // TopN Filter only works in no-nullable column
-                    if (slot.getId().equals(slotRef.getSlotId()) && (!slotRef.isNullable() || rfDesc.isNullLast())) {
+                    if (!slot.getId().equals(slotRef.getSlotId())) {
+                        continue;
+                    }
+                    if (!slotRef.isNullable() || rfDesc.isNullLast()) {
+                        return true;
+                    }
+                    if (slotRef.isNullable() && canEliminateNull(slot)) {
                         return true;
                     }
                 }
             }
             return false;
         } else {
-            return probeExpr.isBoundByTupleIds(getTupleIds());
+            return getSlotIds(descTbl).contains(probeExpr.getUsedSlotIds());
         }
+    }
+
+    protected boolean canEliminateNull(Expr expr, SlotDescriptor slot) {
+        if (expr.isBound(slot.getId())) {
+            ScalarOperator operator = SqlToScalarOperatorTranslator.translate(expr);
+            ColumnRefOperator column = new ColumnRefOperator(slot.getId().asInt(), slot.getType(),
+                    "any", true);
+            return Utils.canEliminateNull(Sets.newHashSet(column), operator);
+        }
+        return false;
+    }
+    protected boolean canEliminateNull(SlotDescriptor slot) {
+        return conjuncts.stream().anyMatch(expr -> canEliminateNull(expr, slot));
     }
 
     private boolean tryPushdownRuntimeFilterToChild(DescriptorTable descTbl, RuntimeFilterDescription description,
@@ -896,14 +934,16 @@ abstract public class PlanNode extends TreeNode<PlanNode> {
                                                             boolean addProbeInfo) {
         boolean accept = tryPushdownRuntimeFilterToChild(descTbl, description, optProbeExprCandidates,
                 optPartitionByExprsCandidates, childIdx);
-        boolean isBound = probeExpr.isBoundByTupleIds(getTupleIds());
+        RoaringBitmap slotIds = getSlotIds(descTbl);
+        boolean isBound = slotIds.contains(probeExpr.getUsedSlotIds()) &&
+                partitionByExprs.stream().allMatch(expr -> slotIds.contains(expr.getUsedSlotIds()));
         if (isBound) {
             checkRuntimeFilterOnNullValue(description, probeExpr);
         }
         if (accept) {
             return true;
         }
-        if (addProbeInfo && description.canProbeUse(this)) {
+        if (isBound && addProbeInfo && description.canProbeUse(this)) {
             // can not push down to children.
             // use runtime filter at this level.
             description.addProbeExpr(id.asInt(), probeExpr);

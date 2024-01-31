@@ -51,9 +51,6 @@ public class ExecuteScriptExecutor {
     }
 
     public static ShowResultSet execute(ExecuteScriptStmt stmt, ConnectContext ctx) throws UserException {
-        if (!"127.0.0.1".equals(ctx.getRemoteIP()) || Config.enable_remote_script) {
-            throw new UserException("script can only be executed on localhost");
-        }
         if (stmt.isFrontendScript()) {
             return executeFrontendScript(stmt, ctx);
         } else {
@@ -82,7 +79,7 @@ public class ExecuteScriptExecutor {
     }
 
     private static ShowResultSet executeBackendScript(ExecuteScriptStmt stmt, ConnectContext ctx) throws UserException {
-        Backend be = GlobalStateMgr.getCurrentSystemInfo().getBackend(stmt.getBeId());
+        Backend be = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackend(stmt.getBeId());
         if (be == null) {
             throw new UserException("node not found: " + stmt.getBeId());
         }

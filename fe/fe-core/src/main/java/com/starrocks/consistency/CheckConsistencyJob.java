@@ -47,6 +47,8 @@ import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.Config;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.persist.ConsistencyCheckInfo;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.task.AgentBatchTask;
@@ -109,17 +111,13 @@ public class CheckConsistencyJob {
         return tabletId;
     }
 
-    public synchronized void setChecksum(long backendId, long checksum) {
-        this.checksumMap.put(backendId, checksum);
-    }
-
     /*
      * return:
      *  true: continue
      *  false: cancel
      */
     public boolean sendTasks() {
-        TabletInvertedIndex invertedIndex = GlobalStateMgr.getCurrentInvertedIndex();
+        TabletInvertedIndex invertedIndex = GlobalStateMgr.getCurrentState().getTabletInvertedIndex();
         TabletMeta tabletMeta = invertedIndex.getTabletMeta(tabletId);
         if (tabletMeta == null) {
             LOG.debug("tablet[{}] has been removed", tabletId);
@@ -135,7 +133,8 @@ public class CheckConsistencyJob {
         LocalTablet tablet = null;
 
         AgentBatchTask batchTask = new AgentBatchTask();
-        db.readLock();
+        Locker locker = new Locker();
+        locker.lockDatabase(db, LockType.READ);
         try {
             Table table = db.getTable(tabletMeta.getTableId());
             if (table == null) {
@@ -213,16 +212,16 @@ public class CheckConsistencyJob {
             }
 
         } finally {
-            db.readUnlock();
+            locker.unLockDatabase(db, LockType.READ);
         }
 
         if (state != JobState.RUNNING) {
             // failed to send task. set tablet's checked version to avoid choosing it again
-            db.writeLock();
+            locker.lockDatabase(db, LockType.WRITE);
             try {
                 tablet.setCheckedVersion(checkedVersion);
             } finally {
-                db.writeUnlock();
+                locker.unLockDatabase(db, LockType.WRITE);
             }
             return false;
         }
@@ -250,7 +249,7 @@ public class CheckConsistencyJob {
         }
 
         // check again. in case tablet has already been removed
-        TabletMeta tabletMeta = GlobalStateMgr.getCurrentInvertedIndex().getTabletMeta(tabletId);
+        TabletMeta tabletMeta = GlobalStateMgr.getCurrentState().getTabletInvertedIndex().getTabletMeta(tabletId);
         if (tabletMeta == null) {
             LOG.warn("tablet[{}] has been removed", tabletId);
             return -1;
@@ -263,7 +262,8 @@ public class CheckConsistencyJob {
         }
 
         boolean isConsistent = true;
-        db.writeLock();
+        Locker locker = new Locker();
+        locker.lockDatabase(db, LockType.WRITE);
         try {
             Table table = db.getTable(tabletMeta.getTableId());
             if (table == null) {
@@ -372,7 +372,7 @@ public class CheckConsistencyJob {
             return 1;
 
         } finally {
-            db.writeUnlock();
+            locker.unLockDatabase(db, LockType.WRITE);
         }
     }
 

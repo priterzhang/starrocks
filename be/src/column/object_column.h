@@ -26,23 +26,13 @@
 
 namespace starrocks {
 
-//class Object {
-//    Object();
-//
-//    Object(const Slice& s);
-//
-//    void clear();
-//
-//    size_t serialize_size() const;
-//    size_t serialize(uint8_t* dst) const;
-//};
-
 template <typename T>
 class ObjectColumn : public ColumnFactory<Column, ObjectColumn<T>> {
     friend class ColumnFactory<Column, ObjectColumn>;
 
 public:
     using ValueType = T;
+    using Container = Buffer<ValueType*>;
 
     ObjectColumn() = default;
 
@@ -103,14 +93,9 @@ public:
 
     void append(const Column& src, size_t offset, size_t count) override;
 
-    void append_shallow_copy(const Column& src, size_t offset, size_t count) override;
-
     void append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) override;
 
-    void append_selective_shallow_copy(const Column& src, const uint32_t* indexes, uint32_t from,
-                                       uint32_t size) override;
-
-    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size, bool deep_copy) override;
+    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) override;
 
     bool append_nulls(size_t count) override { return false; }
 
@@ -242,6 +227,8 @@ public:
 
     bool has_large_column() const override { return false; }
 
+    void check_or_die() const {}
+
 private:
     // add this to avoid warning clang-diagnostic-overloaded-virtual
     using Column::append;
@@ -262,8 +249,6 @@ private:
 
     // Currently, only for data loading
     void _build_slices() const;
-
-    void check_or_die() const override {}
 
 private:
     Buffer<T> _pool;

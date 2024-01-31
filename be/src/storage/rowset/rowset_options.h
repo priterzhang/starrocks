@@ -22,6 +22,7 @@
 #include "runtime/global_dict/types.h"
 #include "storage/olap_common.h"
 #include "storage/olap_runtime_range_pruner.h"
+#include "storage/options.h"
 #include "storage/seek_range.h"
 #include "storage/tablet_schema.h"
 
@@ -37,11 +38,11 @@ class TabletSchema;
 class ColumnPredicate;
 class DeletePredicates;
 struct RowidRangeOption;
-struct ShortKeyRangeOption;
+struct ShortKeyRangesOption;
 
 class RowsetReadOptions {
     using RowidRangeOptionPtr = std::shared_ptr<RowidRangeOption>;
-    using ShortKeyRangeOptionPtr = std::shared_ptr<ShortKeyRangeOption>;
+    using ShortKeyRangesOptionPtr = std::shared_ptr<ShortKeyRangesOption>;
     using PredicateList = std::vector<const ColumnPredicate*>;
 
 public:
@@ -68,17 +69,19 @@ public:
     RuntimeState* runtime_state = nullptr;
     RuntimeProfile* profile = nullptr;
     bool use_page_cache = false;
-    bool fill_data_cache = true;
+    LakeIOOptions lake_io_opts;
 
     ColumnIdToGlobalDictMap* global_dictmaps = &EMPTY_GLOBAL_DICTMAPS;
     const std::unordered_set<uint32_t>* unused_output_column_ids = nullptr;
 
     RowidRangeOptionPtr rowid_range_option = nullptr;
-    std::vector<ShortKeyRangeOptionPtr> short_key_ranges;
+    ShortKeyRangesOptionPtr short_key_ranges_option = nullptr;
 
     OlapRuntimeScanRangePruner runtime_range_pruner;
 
     std::vector<ColumnAccessPathPtr>* column_access_paths = nullptr;
+
+    bool asc_hint = true;
 };
 
 } // namespace starrocks

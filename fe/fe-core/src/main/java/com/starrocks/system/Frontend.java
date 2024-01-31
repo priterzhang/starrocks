@@ -34,6 +34,7 @@
 
 package com.starrocks.system;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.common.Config;
 import com.starrocks.common.io.Text;
@@ -133,6 +134,16 @@ public class Frontend implements Writable {
         this.editLogPort = editLogPort;
     }
 
+    @VisibleForTesting
+    public void setRpcPort(int rpcPort) {
+        this.rpcPort = rpcPort;
+    }
+
+    @VisibleForTesting
+    public void setAlive(boolean isAlive) {
+        this.isAlive = isAlive;
+    }
+
     /**
      * handle Frontend's heartbeat response.
      * Because the replayed journal id is very likely to be changed at each heartbeat response,
@@ -147,7 +158,7 @@ public class Frontend implements Writable {
             if (!isAlive && !isReplay) {
                 if (GlobalStateMgr.getCurrentState().getHaProtocol() instanceof BDBHA) {
                     BDBHA ha = (BDBHA) GlobalStateMgr.getCurrentState().getHaProtocol();
-                    ha.removeUnstableNode(host, GlobalStateMgr.getCurrentState().getFollowerCnt());
+                    ha.removeUnstableNode(host, GlobalStateMgr.getCurrentState().getNodeMgr().getFollowerCnt());
                 }
             }
             isAlive = true;

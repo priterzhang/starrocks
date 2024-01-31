@@ -14,6 +14,8 @@
 
 package com.starrocks.sql.analyzer;
 
+import com.starrocks.common.Config;
+import com.starrocks.common.ErrorReportException;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.ast.StatementBase;
@@ -29,6 +31,7 @@ public class AnalyzeTestUtil {
     private static String DB_NAME = "test";
 
     public static void init() throws Exception {
+        Config.enable_experimental_rowstore = true;
         // create connect context
         UtFrameUtils.createMinStarRocksCluster();
         connectContext = UtFrameUtils.createDefaultCtx();
@@ -272,6 +275,19 @@ public class AnalyzeTestUtil {
                 "\"replication_num\" = \"1\",\n" +
                 "\"in_memory\" = \"false\"\n" +
                 ");");
+
+        starRocksAssert.withTable("CREATE TABLE `tmcwr` (\n" +
+                "  `id`  bigint COMMENT \"\",\n" +
+                "  `name`  bigint NULL COMMENT \"\",\n" +
+                "  `mc` bigint NULL COMMENT \"\" ,\n" +
+                "  `ff` bigint NULL COMMENT \"\"\n" +
+                ") ENGINE=OLAP\n" +
+                "PRIMARY KEY(`id`)\n" +
+                "DISTRIBUTED BY HASH(`id`) BUCKETS 3\n" +
+                "PROPERTIES (\n" +
+                "\"replication_num\" = \"1\",\n" +
+                "\"storage_type\" = \"column_with_row\"" +
+                ");");
     }
 
     public static String getDbName() {
@@ -337,12 +353,12 @@ public class AnalyzeTestUtil {
                     connectContext.getSessionVariable().getSqlMode()).get(0);
             Analyzer.analyze(statementBase, connectContext);
             Assert.fail("Miss semantic error exception");
-        } catch (ParsingException | SemanticException | UnsupportedException e) {
+        } catch (ParsingException | SemanticException | UnsupportedException | ErrorReportException e) {
             if (!exceptMessage.equals("")) {
                 Assert.assertTrue(e.getMessage(), e.getMessage().contains(exceptMessage));
             }
         } catch (Exception e) {
-            Assert.fail("analyze exception");
+            Assert.fail("analyze exception: " + e);
         }
     }
 }

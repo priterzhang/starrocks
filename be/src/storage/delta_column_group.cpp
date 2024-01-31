@@ -198,8 +198,9 @@ Status DeltaColumnGroupListSerializer::_deserialize_delta_column_group_list(cons
 }
 
 void DeltaColumnGroupListHelper::garbage_collection(DeltaColumnGroupList& dcg_list, const TabletSegmentId& tsid,
-                                                    int64_t min_readable_version,
-                                                    std::vector<std::pair<TabletSegmentId, int64_t>>& garbage_dcgs) {
+                                                    int64_t min_readable_version, const std::string& tablet_path,
+                                                    std::vector<std::pair<TabletSegmentId, int64_t>>* garbage_dcgs,
+                                                    std::vector<std::string>* garbage_files) {
     auto dcg_itr = dcg_list.begin();
     // The delta column group that need to be gc, should satisfy two point:
     // 1. It's version is not larger than min_readable_version
@@ -222,7 +223,9 @@ void DeltaColumnGroupListHelper::garbage_collection(DeltaColumnGroupList& dcg_li
                 }
             }
             if (need_free) {
-                garbage_dcgs.emplace_back(tsid, (*dcg_itr)->version());
+                garbage_dcgs->emplace_back(tsid, (*dcg_itr)->version());
+                std::vector<std::string> dcg_files = (*dcg_itr)->column_files(tablet_path);
+                garbage_files->insert(garbage_files->end(), dcg_files.begin(), dcg_files.end());
                 dcg_itr = dcg_list.erase(dcg_itr);
             } else {
                 for (const auto& cids : all_cids) {
@@ -239,13 +242,13 @@ void DeltaColumnGroupListHelper::garbage_collection(DeltaColumnGroupList& dcg_li
 Status DeltaColumnGroupListHelper::save_snapshot(const std::string& file_path,
                                                  DeltaColumnGroupSnapshotPB& dcg_snapshot_pb) {
     DCHECK(!file_path.empty());
-    ProtobufFile file(file_path);
+    ProtobufFileWithHeader file(file_path);
     return file.save(dcg_snapshot_pb, true);
 }
 
 Status DeltaColumnGroupListHelper::parse_snapshot(const std::string& file_path,
                                                   DeltaColumnGroupSnapshotPB& dcg_snapshot_pb) {
-    ProtobufFile file(file_path);
+    ProtobufFileWithHeader file(file_path);
     Status st = file.load(&dcg_snapshot_pb);
     if (!st.ok()) {
         LOG(WARNING) << "Fail to load dcg meta file: " << st;

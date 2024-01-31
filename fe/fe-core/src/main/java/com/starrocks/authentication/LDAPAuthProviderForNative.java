@@ -13,12 +13,12 @@
 // limitations under the License.
 package com.starrocks.authentication;
 
+import com.google.common.base.Strings;
 import com.starrocks.mysql.MysqlPassword;
 import com.starrocks.mysql.privilege.AuthPlugin;
 import com.starrocks.mysql.privilege.Password;
 import com.starrocks.mysql.security.LdapSecurity;
 import com.starrocks.sql.ast.UserIdentity;
-import org.apache.parquet.Strings;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -61,7 +61,7 @@ public class LDAPAuthProviderForNative implements AuthenticationProvider {
         UserAuthenticationInfo ret = new UserAuthenticationInfo();
         ret.setPassword(password.getPassword());
         ret.setAuthPlugin(PLUGIN_NAME);
-        ret.setOrigUserHost(userIdentity.getQualifiedUser(), userIdentity.getHost());
+        ret.setOrigUserHost(userIdentity.getUser(), userIdentity.getHost());
         ret.setTextForAuthPlugin(password.getUserForAuthPlugin());
         return ret;
     }

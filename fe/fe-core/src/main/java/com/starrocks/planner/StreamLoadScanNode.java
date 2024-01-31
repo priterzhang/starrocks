@@ -222,6 +222,7 @@ public class StreamLoadScanNode extends LoadScanNode {
         params.setEnclose(streamLoadInfo.getEnclose());
         params.setEscape(streamLoadInfo.getEscape());
         params.setStrict_mode(streamLoadInfo.isStrictMode());
+        params.setJson_file_size_limit(Config.json_file_size_limit);
         if (streamLoadInfo.getConfluentSchemaRegistryUrl() != null) {
             params.setConfluent_schema_registry_url(streamLoadInfo.getConfluentSchemaRegistryUrl());
         }
@@ -244,7 +245,7 @@ public class StreamLoadScanNode extends LoadScanNode {
 
     private void assignBackends() throws UserException {
         backends = Lists.newArrayList();
-        for (Backend be : GlobalStateMgr.getCurrentSystemInfo().getIdToBackend().values()) {
+        for (Backend be : GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getIdToBackend().values()) {
             if (be.isAvailable()) {
                 backends.add(be);
             }

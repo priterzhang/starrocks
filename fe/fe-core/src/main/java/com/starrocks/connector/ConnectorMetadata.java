@@ -112,6 +112,10 @@ public interface ConnectorMetadata {
         return null;
     }
 
+    default boolean tableExists(String dbName, String tblName) {
+        return listTableNames(dbName).contains(tblName);
+    }
+
     /**
      * Get Table descriptor and materialized index for the materialized view index specific by `dbName`.`tblName`
      *
@@ -169,6 +173,10 @@ public interface ConnectorMetadata {
         return Statistics.builder().build();
     }
 
+    default List<PartitionKey> getPrunedPartitions(Table table, ScalarOperator predicate, long limit) {
+        throw new StarRocksConnectorException("This connector doesn't support pruning partitions");
+    }
+
     /**
      * Clean the query level cache after the query.
      */
@@ -218,7 +226,11 @@ public interface ConnectorMetadata {
         throw new StarRocksConnectorException("This connector doesn't support sink");
     }
 
+    default void abortSink(String dbName, String table, List<TSinkCommitInfo> commitInfos) {
+    }
+
     default void alterTable(AlterTableStmt stmt) throws UserException {
+        throw new StarRocksConnectorException("This connector doesn't support alter table");
     }
 
     default void renameTable(Database db, Table table, TableRenameClause tableRenameClause) throws DdlException {
@@ -274,6 +286,10 @@ public interface ConnectorMetadata {
 
     default CloudConfiguration getCloudConfiguration() {
         throw new StarRocksConnectorException("This connector doesn't support getting cloud configuration");
+    }
+
+    default List<PartitionInfo> getChangedPartitionInfo(Table table, long mvSnapShotID) {
+        return Lists.newArrayList();
     }
 }
 

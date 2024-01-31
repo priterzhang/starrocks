@@ -268,6 +268,13 @@ StatusOr<LogicalType> JDBCScanner::_precheck_data_type(const std::string& java_c
                                 slot_desc->col_name()));
         }
         return TYPE_VARCHAR;
+    } else if (java_class == "java.sql.Time") {
+        if (type != TYPE_TIME) {
+            return Status::NotSupported(
+                    fmt::format("Type mismatches on column[{}], JDBC result type is Time, please set the type to time",
+                                slot_desc->col_name()));
+        }
+        return TYPE_TIME;
     } else if (java_class == "java.time.LocalDateTime") {
         if (type != TYPE_DATETIME) {
             return Status::NotSupported(fmt::format(
@@ -284,8 +291,13 @@ StatusOr<LogicalType> JDBCScanner::_precheck_data_type(const std::string& java_c
         }
         return TYPE_VARCHAR;
     } else {
-        return Status::NotSupported(fmt::format("Type is not supported on column[{}], JDBC result type is [{}]",
-                                                slot_desc->col_name(), java_class));
+        if (type != TYPE_VARCHAR) {
+            return Status::NotSupported(
+                    fmt::format("JDBC result type of column[{}] is [{}], StarRocks does not recognize it, please set "
+                                "the type of this column to varchar to avoid information loss.",
+                                slot_desc->col_name(), java_class));
+        }
+        return TYPE_VARCHAR;
     }
     __builtin_unreachable();
 }

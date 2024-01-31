@@ -41,6 +41,8 @@ import com.google.common.collect.Sets;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.cluster.ClusterNamespace;
 import com.starrocks.common.DdlException;
+import com.starrocks.common.ErrorCode;
+import com.starrocks.common.ErrorReport;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.http.HttpConnectContext;
 import com.starrocks.mysql.MysqlCapability;
@@ -50,9 +52,15 @@ import com.starrocks.mysql.MysqlSerializer;
 import com.starrocks.mysql.ssl.SSLChannel;
 import com.starrocks.mysql.ssl.SSLChannelImpClassLoader;
 import com.starrocks.plugin.AuditEvent.AuditEventBuilder;
+import com.starrocks.privilege.AccessDeniedException;
+import com.starrocks.privilege.ObjectType;
 import com.starrocks.privilege.PrivilegeException;
+import com.starrocks.privilege.PrivilegeType;
+import com.starrocks.server.CatalogMgr;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.MetadataMgr;
 import com.starrocks.server.WarehouseManager;
+import com.starrocks.sql.analyzer.Authorizer;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.SetListItem;
 import com.starrocks.sql.ast.SetStmt;
@@ -64,6 +72,7 @@ import com.starrocks.sql.ast.UserVariable;
 import com.starrocks.sql.optimizer.dump.DumpInfo;
 import com.starrocks.sql.optimizer.dump.QueryDumpInfo;
 import com.starrocks.sql.parser.SqlParser;
+import com.starrocks.thrift.TPipelineProfileLevel;
 import com.starrocks.thrift.TUniqueId;
 import com.starrocks.thrift.TWorkGroup;
 import org.apache.logging.log4j.LogManager;
@@ -71,6 +80,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.nio.channels.SocketChannel;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -90,6 +100,7 @@ public class ConnectContext {
     // set this id before analyze
     protected long stmtId;
     protected long forwardedStmtId;
+    private int forwardTimes = 0;
 
     // The queryId of the last query processed by this session.
     // In some scenarios, the user can get the output of a request by queryId,
@@ -133,14 +144,19 @@ public class ConnectContext {
     protected String currentDb = "";
     // warehouse
     protected String currentWarehouse;
-
-    // username@host of current login user
+    // `qualifiedUser` is the user used when the user establishes connection and authentication.
+    // It is the real user used for this connection.
+    // Different from the `currentUserIdentity` authentication user of execute as,
+    // `qualifiedUser` should not be changed during the entire session.
     protected String qualifiedUser;
-    // username@host combination for the StarRocks account
-    // that the server used to authenticate the current client.
-    // In other word, currentUserIdentity is the entry that matched in StarRocks auth table.
-    // This account determines user's access privileges.
+    // `currentUserIdentity` is the user used for authorization. Under normal circumstances,
+    // `currentUserIdentity` and `qualifiedUser` are the same user,
+    // but currentUserIdentity may be modified by execute as statement.
     protected UserIdentity currentUserIdentity;
+    // currentRoleIds is the role that has taken effect in the current session.
+    // Note that this set is not all roles belonging to the current user.
+    // `execute as` will modify currentRoleIds and assign the active role of the impersonate user to currentRoleIds.
+    // For specific logic, please refer to setCurrentRoleIds.
     protected Set<Long> currentRoleIds = new HashSet<>();
     // Serializer used to pack MySQL packet.
     protected MysqlSerializer serializer;
@@ -156,8 +172,8 @@ public class ConnectContext {
     protected StmtExecutor executor;
     // Command this connection is processing.
     protected MysqlCommand command;
-    // Timestamp in millisecond last command starts at
-    protected long startTime = System.currentTimeMillis();
+    // last command start time
+    protected Instant startTime = Instant.now();
     // Cache thread info for this connection.
     protected ThreadInfo threadInfo;
 
@@ -309,6 +325,19 @@ public class ConnectContext {
         threadLocalInfo.set(this);
     }
 
+    /**
+     * Set this connect to thread-local if not exists
+     *
+     * @return set or not
+     */
+    public boolean setThreadLocalInfoIfNotExists() {
+        if (threadLocalInfo.get() == null) {
+            threadLocalInfo.set(this);
+            return true;
+        }
+        return false;
+    }
+
     public void setGlobalStateMgr(GlobalStateMgr globalStateMgr) {
         this.globalStateMgr = globalStateMgr;
     }
@@ -419,11 +448,15 @@ public class ConnectContext {
     }
 
     public long getStartTime() {
+        return startTime.toEpochMilli();
+    }
+
+    public Instant getStartTimeInstant() {
         return startTime;
     }
 
     public void setStartTime() {
-        startTime = System.currentTimeMillis();
+        startTime = Instant.now();
         returnRows = 0;
     }
 
@@ -435,7 +468,7 @@ public class ConnectContext {
         return returnRows;
     }
 
-    public void resetRetureRows() {
+    public void resetReturnRows() {
         returnRows = 0;
     }
 
@@ -552,6 +585,24 @@ public class ConnectContext {
         this.lastQueryId = queryId;
     }
 
+    public boolean isProfileEnabled() {
+        if (sessionVariable == null) {
+            return false;
+        }
+        if (sessionVariable.isEnableProfile()) {
+            return true;
+        }
+        if (!sessionVariable.isEnableBigQueryProfile()) {
+            return false;
+        }
+        return System.currentTimeMillis() - getStartTime() > sessionVariable.getBigQueryProfileMilliSecondThreshold();
+    }
+
+    public boolean needMergeProfile() {
+        return isProfileEnabled() &&
+                sessionVariable.getPipelineProfileLevel() < TPipelineProfileLevel.DETAIL.getValue();
+    }
+
     public byte[] getAuthDataSalt() {
         return authDataSalt;
     }
@@ -631,6 +682,10 @@ public class ConnectContext {
         this.currentWarehouse = currentWarehouse;
     }
 
+    public void setCurrentWarehouseId(long id) {
+        // not implemented in this codebase
+    }
+
     public void setParentConnectContext(ConnectContext parent) {
         this.parent = parent;
     }
@@ -675,8 +730,16 @@ public class ConnectContext {
         return relationAliasCaseInsensitive;
     }
 
+    public void setForwardTimes(int forwardTimes) {
+        this.forwardTimes = forwardTimes;
+    }
+
+    public int getForwardTimes() {
+        return this.forwardTimes;
+    }
+
     // kill operation with no protect.
-    public void kill(boolean killConnection) {
+    public void kill(boolean killConnection, String cancelledMessage) {
         LOG.warn("kill query, {}, kill connection: {}",
                 getMysqlChannel().getRemoteHostPortString(), killConnection);
         // Now, cancel running process.
@@ -685,7 +748,7 @@ public class ConnectContext {
             isKilled = true;
         }
         if (executorRef != null) {
-            executorRef.cancel();
+            executorRef.cancel(cancelledMessage);
         }
         if (killConnection) {
             int times = 0;
@@ -709,11 +772,12 @@ public class ConnectContext {
     }
 
     public void checkTimeout(long now) {
-        if (startTime <= 0) {
+        long startTimeMillis = getStartTime();
+        if (startTimeMillis <= 0) {
             return;
         }
 
-        long delta = now - startTime;
+        long delta = now - startTimeMillis;
         boolean killFlag = false;
         boolean killConnection = false;
         if (command == MysqlCommand.COM_SLEEP) {
@@ -736,7 +800,7 @@ public class ConnectContext {
             }
         }
         if (killFlag) {
-            kill(killConnection);
+            kill(killConnection, "query timeout");
         }
     }
 
@@ -753,11 +817,11 @@ public class ConnectContext {
         if (v > 0) {
             return v;
         }
-        return globalStateMgr.getClusterInfo().getAliveBackendNumber();
+        return globalStateMgr.getNodeMgr().getClusterInfo().getAliveBackendNumber();
     }
 
     public int getTotalBackendNumber() {
-        return globalStateMgr.getClusterInfo().getTotalBackendNumber();
+        return globalStateMgr.getNodeMgr().getClusterInfo().getTotalBackendNumber();
     }
 
     public void setPending(boolean pending) {
@@ -804,6 +868,109 @@ public class ConnectContext {
         return executor;
     }
 
+    public ScopeGuard bindScope() {
+        return ScopeGuard.setIfNotExists(this);
+    }
+
+    // Change current catalog of this session, and reset current database.
+    // We can support "use 'catalog <catalog_name>'" from mysql client or "use catalog <catalog_name>" from jdbc.
+    public void changeCatalog(String newCatalogName) throws DdlException {
+        CatalogMgr catalogMgr = GlobalStateMgr.getCurrentState().getCatalogMgr();
+        if (!catalogMgr.catalogExists(newCatalogName)) {
+            ErrorReport.reportDdlException(ErrorCode.ERR_BAD_CATALOG_ERROR, newCatalogName);
+        }
+        if (!CatalogMgr.isInternalCatalog(newCatalogName)) {
+            try {
+                Authorizer.checkAnyActionOnCatalog(this.getCurrentUserIdentity(),
+                        this.getCurrentRoleIds(), newCatalogName);
+            } catch (AccessDeniedException e) {
+                AccessDeniedException.reportAccessDenied(newCatalogName, this.getCurrentUserIdentity(), this.getCurrentRoleIds(),
+                        PrivilegeType.ANY.name(), ObjectType.CATALOG.name(), newCatalogName);
+            }
+        }
+        this.setCurrentCatalog(newCatalogName);
+        this.setDatabase("");
+    }
+
+    // Change current catalog and database of this session.
+    // identifier could be "CATALOG.DB" or "DB".
+    // For "CATALOG.DB", we change the current catalog database.
+    // For "DB", we keep the current catalog and change the current database.
+    public void changeCatalogDb(String identifier) throws DdlException {
+        CatalogMgr catalogMgr = GlobalStateMgr.getCurrentState().getCatalogMgr();
+        MetadataMgr metadataMgr = GlobalStateMgr.getCurrentState().getMetadataMgr();
+
+        String dbName;
+
+        String[] parts = identifier.split("\\.", 2); // at most 2 parts
+        if (parts.length != 1 && parts.length != 2) {
+            ErrorReport.reportDdlException(ErrorCode.ERR_BAD_CATALOG_AND_DB_ERROR, identifier);
+        }
+
+        if (parts.length == 1) { // use database
+            dbName = identifier;
+        } else { // use catalog.database
+            String newCatalogName = parts[0];
+            if (!catalogMgr.catalogExists(newCatalogName)) {
+                ErrorReport.reportDdlException(ErrorCode.ERR_BAD_CATALOG_ERROR, newCatalogName);
+            }
+            if (!CatalogMgr.isInternalCatalog(newCatalogName)) {
+                try {
+                    Authorizer.checkAnyActionOnCatalog(this.getCurrentUserIdentity(),
+                            this.getCurrentRoleIds(), newCatalogName);
+                } catch (AccessDeniedException e) {
+                    AccessDeniedException.reportAccessDenied(newCatalogName,
+                            this.getCurrentUserIdentity(), this.getCurrentRoleIds(),
+                            PrivilegeType.ANY.name(), ObjectType.CATALOG.name(), newCatalogName);
+                }
+            }
+            this.setCurrentCatalog(newCatalogName);
+            dbName = parts[1];
+        }
+
+        if (!Strings.isNullOrEmpty(dbName) && metadataMgr.getDb(this.getCurrentCatalog(), dbName) == null) {
+            LOG.debug("Unknown catalog {} and db {}", this.getCurrentCatalog(), dbName);
+            ErrorReport.reportDdlException(ErrorCode.ERR_BAD_DB_ERROR, dbName);
+        }
+
+        // Here we check the request permission that sent by the mysql client or jdbc.
+        // So we didn't check UseDbStmt permission in PrivilegeCheckerV2.
+        try {
+            Authorizer.checkAnyActionOnOrInDb(this.getCurrentUserIdentity(),
+                    this.getCurrentRoleIds(), this.getCurrentCatalog(), dbName);
+        } catch (AccessDeniedException e) {
+            AccessDeniedException.reportAccessDenied(this.getCurrentCatalog(),
+                    this.getCurrentUserIdentity(), this.getCurrentRoleIds(),
+                    PrivilegeType.ANY.name(), ObjectType.DATABASE.name(), dbName);
+        }
+
+        this.setDatabase(dbName);
+    }
+
+    /**
+     * Set thread-local context for the scope, and remove it after leaving the scope
+     */
+    public static class ScopeGuard implements AutoCloseable {
+
+        private boolean set = false;
+
+        private ScopeGuard() {
+        }
+
+        public static ScopeGuard setIfNotExists(ConnectContext session) {
+            ScopeGuard res = new ScopeGuard();
+            res.set = session.setThreadLocalInfoIfNotExists();
+            return res;
+        }
+
+        @Override
+        public void close() {
+            if (set) {
+                ConnectContext.remove();
+            }
+        }
+    }
+
     public class ThreadInfo {
         public boolean isRunning() {
             return state.isRunning();
@@ -815,7 +982,7 @@ public class ConnectContext {
             row.add(ClusterNamespace.getNameFromFullName(qualifiedUser));
             // Ip + port
             if (ConnectContext.this instanceof HttpConnectContext) {
-                String remoteAddress = ((HttpConnectContext) (ConnectContext.this)).getRemoteAddres();
+                String remoteAddress = ((HttpConnectContext) (ConnectContext.this)).getRemoteAddress();
                 row.add(remoteAddress);
             } else {
                 row.add(getMysqlChannel().getRemoteHostPortString());
@@ -826,7 +993,7 @@ public class ConnectContext {
             // connection start Time
             row.add(TimeUtils.longToTimeString(connectionStartTime));
             // Time
-            row.add("" + (nowMs - startTime) / 1000);
+            row.add("" + (nowMs - getStartTime()) / 1000);
             // State
             row.add(state.toString());
             // Info

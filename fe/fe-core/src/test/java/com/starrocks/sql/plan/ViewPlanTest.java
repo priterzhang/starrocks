@@ -26,6 +26,7 @@ public class ViewPlanTest extends PlanTestBase {
     private static final AtomicInteger INDEX = new AtomicInteger(0);
 
     private void testView(String sql) throws Exception {
+        starRocksAssert.getCtx().getSessionVariable().setEnableViewBasedMvRewrite(false);
         String viewName = "view" + INDEX.getAndIncrement();
         String createView = "create view " + viewName + " as " + sql;
         starRocksAssert.withView(createView);
@@ -38,6 +39,7 @@ public class ViewPlanTest extends PlanTestBase {
     }
 
     private void testViewIgnoreObjectCountDistinct(String sql) throws Exception {
+        starRocksAssert.getCtx().getSessionVariable().setEnableViewBasedMvRewrite(false);
         String viewName = "view" + INDEX.getAndIncrement();
         String createView = "create view " + viewName + " as " + sql;
         starRocksAssert.withView(createView);
@@ -1720,7 +1722,7 @@ public class ViewPlanTest extends PlanTestBase {
 
         AlterViewStmt alterViewStmt =
                 (AlterViewStmt) UtFrameUtils.parseStmtWithNewParser(alterView, starRocksAssert.getCtx());
-        GlobalStateMgr.getCurrentState().alterView(alterViewStmt);
+        GlobalStateMgr.getCurrentState().getLocalMetastore().alterView(alterViewStmt);
 
         sqlPlan = getFragmentPlan(alterStmt);
         viewPlan = getFragmentPlan("select * from " + viewName);
@@ -1766,6 +1768,12 @@ public class ViewPlanTest extends PlanTestBase {
         sql = "SELECT Map<INT, INT>{1:10,2:20,3:30}";
         testView(sql);
         sql = "SELECT Map{1:10,2:20,3:30}";
+        testView(sql);
+    }
+
+    @Test
+    public void testBackquoteAlias() throws Exception {
+        String sql = "select `select` from (select v1 from t0) `abc.bcd`(`select`);";
         testView(sql);
     }
 }

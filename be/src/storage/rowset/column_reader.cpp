@@ -43,6 +43,7 @@
 #include "column/column_access_path.h"
 #include "column/column_helper.h"
 #include "column/datum_convert.h"
+#include "common/compiler_util.h"
 #include "common/logging.h"
 #include "storage/column_predicate.h"
 #include "storage/rowset/array_column_iterator.h"
@@ -51,6 +52,7 @@
 #include "storage/rowset/bloom_filter.h"
 #include "storage/rowset/bloom_filter_index_reader.h"
 #include "storage/rowset/encoding_info.h"
+#include "storage/rowset/json_column_iterator.h"
 #include "storage/rowset/map_column_iterator.h"
 #include "storage/rowset/page_handle.h"
 #include "storage/rowset/page_io.h"
@@ -59,18 +61,19 @@
 #include "storage/rowset/struct_column_iterator.h"
 #include "storage/rowset/zone_map_index.h"
 #include "storage/types.h"
+#include "types/logical_type.h"
 #include "util/compression/block_compression.h"
 #include "util/rle_encoding.h"
 
 namespace starrocks {
 
-StatusOr<std::unique_ptr<ColumnReader>> ColumnReader::create(ColumnMetaPB* meta, const Segment* segment) {
+StatusOr<std::unique_ptr<ColumnReader>> ColumnReader::create(ColumnMetaPB* meta, Segment* segment) {
     auto r = std::make_unique<ColumnReader>(private_type(0), segment);
     RETURN_IF_ERROR(r->_init(meta));
     return std::move(r);
 }
 
-ColumnReader::ColumnReader(const private_type&, const Segment* segment) : _segment(segment) {
+ColumnReader::ColumnReader(const private_type&, Segment* segment) : _segment(segment) {
     MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->column_metadata_mem_tracker(), sizeof(ColumnReader));
 }
 
@@ -107,6 +110,7 @@ Status ColumnReader::_init(ColumnMetaPB* meta) {
     _column_type = static_cast<LogicalType>(meta->type());
     _dict_page_pointer = PagePointer(meta->dict_page());
     _total_mem_footprint = meta->total_mem_footprint();
+    _name = meta->has_name() ? meta->name() : "None";
 
     if (meta->is_nullable()) _flags |= kIsNullableMask;
     if (meta->has_all_dict_encoded()) _flags |= kHasAllDictEncodedMask;
@@ -128,6 +132,7 @@ Status ColumnReader::_init(ColumnMetaPB* meta) {
                 _ordinal_index_meta.reset(index_meta->release_ordinal_index());
                 MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->ordinal_index_mem_tracker(),
                                          _ordinal_index_meta->SpaceUsedLong());
+                _meta_mem_usage.fetch_add(_ordinal_index_meta->SpaceUsedLong(), std::memory_order_relaxed);
                 _ordinal_index = std::make_unique<OrdinalIndexReader>();
                 break;
             case ZONE_MAP_INDEX:
@@ -145,22 +150,26 @@ Status ColumnReader::_init(ColumnMetaPB* meta) {
                 }
                 MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->column_zonemap_index_mem_tracker(),
                                          _zonemap_index_meta->SpaceUsedLong())
+                _meta_mem_usage.fetch_add(_zonemap_index_meta->SpaceUsedLong(), std::memory_order_relaxed);
                 // the segment zone map will release from zonemap_index_map,
                 // so we should calc mem usage after release.
                 MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->segment_zonemap_mem_tracker(),
                                          _segment_zone_map->SpaceUsedLong())
+                _meta_mem_usage.fetch_add(_segment_zone_map->SpaceUsedLong(), std::memory_order_relaxed);
                 _zonemap_index = std::make_unique<ZoneMapIndexReader>();
                 break;
             case BITMAP_INDEX:
                 _bitmap_index_meta.reset(index_meta->release_bitmap_index());
                 MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->bitmap_index_mem_tracker(),
                                          _bitmap_index_meta->SpaceUsedLong());
+                _meta_mem_usage.fetch_add(_bitmap_index_meta->SpaceUsedLong(), std::memory_order_relaxed);
                 _bitmap_index = std::make_unique<BitmapIndexReader>();
                 break;
             case BLOOM_FILTER_INDEX:
                 _bloom_filter_index_meta.reset(index_meta->release_bloom_filter_index());
                 MEM_TRACKER_SAFE_CONSUME(GlobalEnv::GetInstance()->bloom_filter_index_mem_tracker(),
                                          _bloom_filter_index_meta->SpaceUsedLong());
+                _meta_mem_usage.fetch_add(_bloom_filter_index_meta->SpaceUsedLong(), std::memory_order_relaxed);
                 _bloom_filter_index = std::make_unique<BloomFilterIndexReader>();
                 break;
             case UNKNOWN_INDEX_TYPE:
@@ -170,6 +179,16 @@ Status ColumnReader::_init(ColumnMetaPB* meta) {
         if (_ordinal_index == nullptr) {
             return Status::Corruption(
                     fmt::format("Bad file {}: missing ordinal index for column {}", file_name(), meta->column_id()));
+        }
+
+        if (_column_type == LogicalType::TYPE_JSON) {
+            _sub_readers = std::make_unique<SubReaderList>();
+            for (int i = 0; i < meta->children_columns_size(); ++i) {
+                auto res = ColumnReader::create(meta->mutable_children_columns(i), _segment);
+                RETURN_IF_ERROR(res);
+                _sub_readers->emplace_back(std::move(res).value());
+            }
+            return Status::OK();
         }
         return Status::OK();
     } else if (_column_type == LogicalType::TYPE_ARRAY) {
@@ -360,7 +379,10 @@ Status ColumnReader::load_ordinal_index(const IndexReadOptions& opts) {
     if (UNLIKELY(first_load)) {
         MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->ordinal_index_mem_tracker(),
                                  _ordinal_index_meta->SpaceUsedLong());
+        _meta_mem_usage.fetch_sub(_ordinal_index_meta->SpaceUsedLong(), std::memory_order_relaxed);
+        _meta_mem_usage.fetch_add(_ordinal_index->mem_usage(), std::memory_order_relaxed);
         _ordinal_index_meta.reset();
+        _segment->update_cache_size();
     }
     return Status::OK();
 }
@@ -373,7 +395,10 @@ Status ColumnReader::_load_zonemap_index(const IndexReadOptions& opts) {
     if (UNLIKELY(first_load)) {
         MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->column_zonemap_index_mem_tracker(),
                                  _zonemap_index_meta->SpaceUsedLong());
+        _meta_mem_usage.fetch_sub(_zonemap_index_meta->SpaceUsedLong(), std::memory_order_relaxed);
+        _meta_mem_usage.fetch_add(_zonemap_index->mem_usage());
         _zonemap_index_meta.reset();
+        _segment->update_cache_size();
     }
     return Status::OK();
 }
@@ -386,7 +411,10 @@ Status ColumnReader::_load_bitmap_index(const IndexReadOptions& opts) {
     if (UNLIKELY(first_load)) {
         MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->bitmap_index_mem_tracker(),
                                  _bitmap_index_meta->SpaceUsedLong());
+        _meta_mem_usage.fetch_sub(_bitmap_index_meta->SpaceUsedLong(), std::memory_order_relaxed);
+        _meta_mem_usage.fetch_add(_bitmap_index->mem_usage(), std::memory_order_relaxed);
         _bitmap_index_meta.reset();
+        _segment->update_cache_size();
     }
     return Status::OK();
 }
@@ -399,7 +427,10 @@ Status ColumnReader::_load_bloom_filter_index(const IndexReadOptions& opts) {
     if (UNLIKELY(first_load)) {
         MEM_TRACKER_SAFE_RELEASE(GlobalEnv::GetInstance()->bloom_filter_index_mem_tracker(),
                                  _bloom_filter_index_meta->SpaceUsedLong());
+        _meta_mem_usage.fetch_sub(_bloom_filter_index_meta->SpaceUsedLong(), std::memory_order_relaxed);
+        _meta_mem_usage.fetch_add(_bloom_filter_index->mem_usage(), std::memory_order_relaxed);
         _bloom_filter_index_meta.reset();
+        _segment->update_cache_size();
     }
     return Status::OK();
 }
@@ -472,7 +503,52 @@ bool ColumnReader::segment_zone_map_filter(const std::vector<const ColumnPredica
 }
 
 StatusOr<std::unique_ptr<ColumnIterator>> ColumnReader::new_iterator(ColumnAccessPath* path) {
-    if (is_scalar_field_type(delegate_type(_column_type))) {
+    if (_column_type == LogicalType::TYPE_JSON) {
+        auto json_iter = std::make_unique<ScalarColumnIterator>(this);
+        if (path == nullptr || path->children().empty()) {
+            return json_iter;
+        }
+
+        std::vector<std::unique_ptr<ColumnIterator>> flat_iters;
+        // short name path, e.g. 'a'
+        std::vector<std::string> flat_paths;
+        // full json path, e.g. '$.a'
+        // std::vector<std::string> full_paths;
+        {
+            for (auto& p : path->children()) {
+                if (UNLIKELY(!p->children().empty())) {
+                    // @todo: support later
+                    return Status::InvalidArgument("doesn't support multi-layer json access path: " +
+                                                   p->absolute_path());
+                }
+                flat_paths.emplace_back(p->path());
+                // full_paths.emplace_back("$." + p->path());
+            }
+        }
+
+        int start = is_nullable() ? 1 : 0;
+        for (auto& p : flat_paths) {
+            for (size_t i = start; i < _sub_readers->size(); i++) {
+                const auto& rd = (*_sub_readers)[i];
+                if (rd->name() == p) {
+                    ASSIGN_OR_RETURN(auto iter, rd->new_iterator());
+                    flat_iters.emplace_back(std::move(iter));
+                    break;
+                }
+            }
+        }
+
+        if (flat_iters.size() != flat_paths.size()) {
+            // we must dynamic flat json, because we don't know other segment wasn't the paths
+            return create_json_dynamic_flat_iterator(std::move(json_iter), flat_paths, path);
+        }
+
+        std::unique_ptr<ColumnIterator> null_iterator;
+        if (is_nullable()) {
+            ASSIGN_OR_RETURN(null_iterator, (*_sub_readers)[0]->new_iterator());
+        }
+        return create_json_flat_iterator(this, std::move(null_iterator), std::move(flat_iters), flat_paths, path);
+    } else if (is_scalar_field_type(delegate_type(_column_type))) {
         return std::make_unique<ScalarColumnIterator>(this);
     } else if (_column_type == LogicalType::TYPE_ARRAY) {
         size_t col = 0;
@@ -551,6 +627,18 @@ StatusOr<std::unique_ptr<ColumnIterator>> ColumnReader::new_iterator(ColumnAcces
     } else {
         return Status::NotSupported("unsupported type to create iterator: " + std::to_string(_column_type));
     }
+}
+
+size_t ColumnReader::mem_usage() const {
+    size_t size = sizeof(ColumnReader) + _meta_mem_usage.load(std::memory_order_relaxed);
+
+    if (_sub_readers != nullptr) {
+        for (auto& reader : *_sub_readers) {
+            size += reader->mem_usage();
+        }
+    }
+
+    return size;
 }
 
 } // namespace starrocks

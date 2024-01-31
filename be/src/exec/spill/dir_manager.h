@@ -22,6 +22,7 @@
 #include "common/status.h"
 #include "common/statusor.h"
 #include "fs/fs.h"
+#include "util/random.h"
 
 namespace starrocks::spill {
 
@@ -37,7 +38,18 @@ public:
 
     int64_t get_current_size() const { return _current_size.load(); }
 
-    void set_current_size(int64_t value) { _current_size.store(value); }
+    bool inc_size(int64_t value) {
+        int64_t old_size = 0;
+        do {
+            old_size = _current_size.load();
+            if (old_size + value > _max_size) {
+                return false;
+            }
+        } while (!_current_size.compare_exchange_strong(old_size, old_size + value));
+        return true;
+    }
+
+    void dec_size(int64_t value) { _current_size -= value; }
 
     int64_t get_max_size() const { return _max_size; }
 
@@ -45,12 +57,13 @@ private:
     std::string _dir;
     std::shared_ptr<FileSystem> _fs;
     int64_t _max_size;
-    std::atomic<int64_t> _current_size;
+    std::atomic<int64_t> _current_size = 0;
 };
 using DirPtr = std::shared_ptr<Dir>;
 
 struct AcquireDirOptions {
     // @TOOD(silverbullet233): support more properties when acquiring dir, such as the preference of dir selection
+    size_t data_size = 0;
 };
 
 // DirManager is used to manage all spill-available directories,
@@ -59,6 +72,9 @@ struct AcquireDirOptions {
 class DirManager {
 public:
     DirManager() = default;
+#ifdef BE_TEST
+    DirManager(const std::vector<DirPtr>& dirs) : _dirs(dirs) {}
+#endif
     ~DirManager() = default;
 
     Status init(const std::string& spill_dirs);
@@ -73,8 +89,13 @@ private:
         return stat1.f_fsid.__val[0] == stat2.f_fsid.__val[0] && stat1.f_fsid.__val[1] == stat2.f_fsid.__val[1];
     }
 
-    std::atomic<size_t> _idx = 0;
     std::vector<DirPtr> _dirs;
+    std::mutex _mutex;
+#ifndef BE_TEST
+    Random _rand{(uint32_t)time(nullptr)};
+#else
+    Random _rand{0};
+#endif
 };
 
 } // namespace starrocks::spill

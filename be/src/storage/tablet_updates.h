@@ -25,6 +25,7 @@
 #include "storage/delta_column_group.h"
 #include "storage/edit_version.h"
 #include "storage/olap_common.h"
+#include "storage/row_store_encoder_factory.h"
 #include "storage/rowset/rowset_writer.h"
 #include "util/blocking_queue.hpp"
 
@@ -49,6 +50,7 @@ class Schema;
 class TabletReader;
 class ChunkChanger;
 class SegmentIterator;
+class PrimaryKeyDump;
 
 // save the context when reading from delta column files
 struct GetDeltaColumnContext {
@@ -68,6 +70,11 @@ struct CompactionInfo {
     EditVersion start_version;
     std::vector<uint32_t> inputs;
     uint32_t output = UINT32_MAX;
+};
+
+struct ExtraFileSize {
+    int64_t pindex_size = 0;
+    int64_t col_size = 0;
 };
 
 struct EditVersionInfo {
@@ -97,6 +104,7 @@ struct EditVersionInfo {
 // maintain all states for updatable tablets
 class TabletUpdates {
 public:
+    friend class LocalPrimaryKeyRecover;
     using ColumnUniquePtr = std::unique_ptr<Column>;
     using segment_rowid_t = uint32_t;
     using DeletesMap = std::unordered_map<uint32_t, vector<segment_rowid_t>>;
@@ -221,15 +229,18 @@ public:
 
     // Used for schema change, migrate another tablet's version&rowsets to this tablet
     Status link_from(Tablet* base_tablet, int64_t request_version, ChunkChanger* chunk_changer,
-                     const std::string& err_msg_header = "");
+                     const TabletSchemaCSPtr& base_tablet_schema, const std::string& err_msg_header = "");
 
     Status convert_from(const std::shared_ptr<Tablet>& base_tablet, int64_t request_version,
-                        ChunkChanger* chunk_changer, const std::string& err_msg_header = "");
+                        ChunkChanger* chunk_changer, const TabletSchemaCSPtr& base_tablet_schema,
+                        const std::string& err_msg_header = "");
 
     Status reorder_from(const std::shared_ptr<Tablet>& base_tablet, int64_t request_version,
-                        ChunkChanger* chunk_changer, const std::string& err_msg_header = "");
+                        ChunkChanger* chunk_changer, const TabletSchemaCSPtr& base_tablet_schema,
+                        const std::string& err_msg_header = "");
 
-    Status load_snapshot(const SnapshotMeta& snapshot_meta, bool restore_from_backup = false);
+    Status load_snapshot(const SnapshotMeta& snapshot_meta, bool restore_from_backup = false,
+                         bool save_source_schema = false);
 
     Status get_latest_applied_version(EditVersion* latest_applied_version);
 
@@ -328,10 +339,21 @@ public:
     // get the max rowset creation time for largest major version
     int64_t max_rowset_creation_time();
 
+    Status get_rowset_stats(std::map<uint32_t, std::string>* output_rowset_stats);
+
+    Status primary_index_dump(PrimaryKeyDump* dump, PrimaryIndexMultiLevelPB* dump_pb);
+    // recover
+    Status recover();
+
+    void set_error(const string& msg) { _set_error(msg); }
+
+    Status generate_pk_dump_if_in_error_state();
+
 private:
     friend class Tablet;
     friend class PrimaryIndex;
     friend class PersistentIndex;
+    friend class UpdateManager;
     friend class RowsetUpdateState;
 
     template <typename K, typename V>
@@ -400,6 +422,8 @@ private:
 
     std::string _debug_version_info(bool lock) const;
 
+    std::string _debug_compaction_stats(const std::vector<uint32_t>& input_rowsets, const uint32_t output_rowset);
+
     void _print_rowsets(std::vector<uint32_t>& rowsets, std::string* dst, bool abbr) const;
 
     void _set_error(const string& msg);
@@ -439,6 +463,8 @@ private:
     void check_for_apply() { _check_for_apply(); }
 
     std::timed_mutex* get_index_lock() { return &_index_lock; }
+
+    StatusOr<ExtraFileSize> _get_extra_file_size() const;
 
 private:
     Tablet& _tablet;

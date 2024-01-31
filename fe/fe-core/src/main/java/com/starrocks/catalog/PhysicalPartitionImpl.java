@@ -28,6 +28,7 @@ import org.apache.logging.log4j.Logger;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Physical Partition implementation
@@ -40,6 +41,8 @@ public class PhysicalPartitionImpl extends MetaObject implements PhysicalPartiti
     @SerializedName(value = "id")
     private long id;
 
+    private long beforeRestoreId;
+
     @SerializedName(value = "parentId")
     private long parentId;
 
@@ -48,7 +51,7 @@ public class PhysicalPartitionImpl extends MetaObject implements PhysicalPartiti
 
     /* Physical Partition Member */
     @SerializedName(value = "isImmutable")
-    private boolean isImmutable = false;
+    private AtomicBoolean isImmutable = new AtomicBoolean(false);
 
     @SerializedName(value = "baseIndex")
     private MaterializedIndex baseIndex;
@@ -85,6 +88,10 @@ public class PhysicalPartitionImpl extends MetaObject implements PhysicalPartiti
      */
     private long visibleTxnId = -1;
 
+    private volatile long lastVacuumTime = 0;
+
+    private volatile long minRetainVersion = 0;
+
     public PhysicalPartitionImpl(long id, long parentId, long sharedGroupId, MaterializedIndex baseIndex) {
         this.id = id;
         this.parentId = parentId;
@@ -101,8 +108,24 @@ public class PhysicalPartitionImpl extends MetaObject implements PhysicalPartiti
     }
 
     @Override
+    public void setIdForRestore(long id) {
+        this.beforeRestoreId = this.id;
+        this.id = id;
+    }
+
+    @Override
+    public long getBeforeRestoreId() {
+        return this.beforeRestoreId;
+    }
+
+    @Override
     public long getParentId() {
         return this.parentId;
+    }
+
+    @Override
+    public void setParentId(long parentId) {
+        this.parentId = parentId;
     }
  
     @Override
@@ -112,12 +135,32 @@ public class PhysicalPartitionImpl extends MetaObject implements PhysicalPartiti
 
     @Override
     public void setImmutable(boolean isImmutable) {
-        this.isImmutable = isImmutable;
+        this.isImmutable.set(isImmutable);
     }
 
     @Override
     public boolean isImmutable() {
-        return this.isImmutable;
+        return this.isImmutable.get();
+    }
+
+    @Override
+    public long getLastVacuumTime() {
+        return lastVacuumTime;
+    }
+
+    @Override
+    public void setLastVacuumTime(long lastVacuumTime) {
+        this.lastVacuumTime = lastVacuumTime;
+    }
+
+    @Override
+    public long getMinRetainVersion() {
+        return minRetainVersion;
+    }
+
+    @Override
+    public void setMinRetainVersion(long minRetainVersion) {
+        this.minRetainVersion = minRetainVersion;
     }
 
     /*
@@ -246,6 +289,15 @@ public class PhysicalPartitionImpl extends MetaObject implements PhysicalPartiti
     }
 
     @Override
+    public long getTabletMaxDataSize() {
+        long maxDataSize = 0;
+        for (MaterializedIndex mIndex : getMaterializedIndices(IndexExtState.VISIBLE)) {
+            maxDataSize = Math.max(maxDataSize, mIndex.getTabletMaxDataSize());
+        }
+        return maxDataSize;
+    }
+
+    @Override
     public long storageDataSize() {
         long dataSize = 0;
         for (MaterializedIndex mIndex : getMaterializedIndices(IndexExtState.VISIBLE)) {
@@ -350,9 +402,9 @@ public class PhysicalPartitionImpl extends MetaObject implements PhysicalPartiti
     public String toString() {
         StringBuilder buffer = new StringBuilder();
         buffer.append("partitionId: ").append(id).append("; ");
-        buffer.append("parentPartitionId").append(parentId).append("; ");
-        buffer.append("shardGroupId").append(shardGroupId).append("; ");
-        buffer.append("isImmutable").append(isImmutable).append("; ");
+        buffer.append("parentPartitionId: ").append(parentId).append("; ");
+        buffer.append("shardGroupId: ").append(shardGroupId).append("; ");
+        buffer.append("isImmutable: ").append(isImmutable()).append("; ");
 
         buffer.append("baseIndex: ").append(baseIndex.toString()).append("; ");
 
@@ -366,7 +418,7 @@ public class PhysicalPartitionImpl extends MetaObject implements PhysicalPartiti
         }
 
         buffer.append("visibleVersion: ").append(visibleVersion).append("; ");
-        buffer.append("visibleVersionTime").append(visibleVersionTime).append("; ");
+        buffer.append("visibleVersionTime: ").append(visibleVersionTime).append("; ");
         buffer.append("committedVersion: ").append(getCommittedVersion()).append("; ");
 
         buffer.append("storageDataSize: ").append(storageDataSize()).append("; ");

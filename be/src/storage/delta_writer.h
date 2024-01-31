@@ -66,7 +66,7 @@ struct DeltaWriterOptions {
     bool miss_auto_increment_column = false;
     PartialUpdateMode partial_update_mode = PartialUpdateMode::UNKNOWN_MODE;
     POlapTableSchemaParam ptable_schema_param;
-    int64_t min_immutable_tablet_size = 0;
+    int64_t immutable_tablet_size = 0;
 };
 
 enum State {
@@ -105,6 +105,8 @@ public:
     // [NOT thread-safe]
     [[nodiscard]] Status commit();
 
+    [[nodiscard]] Status flush_memtable_async(bool eos = false);
+
     // Rollback all writes and delete the Rowset created by 'commit()', if any.
     // [thread-safe]
     //
@@ -116,6 +118,8 @@ public:
     int64_t txn_id() const { return _opt.txn_id; }
 
     const PUniqueId& load_id() const { return _opt.load_id; }
+
+    int64_t index_id() const { return _opt.index_id; }
 
     int64_t partition_id() const;
 
@@ -135,6 +139,8 @@ public:
 
     const ReplicateToken* replicate_token() const { return _replicate_token.get(); }
 
+    SegmentFlushToken* segment_flush_token() const { return _segment_flush_token.get(); }
+
     // REQUIRE: has successfully `commit()`ed
     const DictColumnsValidMap& global_dict_columns_valid_info() const {
         CHECK_EQ(kCommitted, _state);
@@ -152,11 +158,14 @@ public:
 
     bool is_immutable() const { return _is_immutable.load(std::memory_order_relaxed); }
 
+    int64_t last_write_ts() const { return _last_write_ts; }
+
+    int64_t write_buffer_size() const { return _write_buffer_size; }
+
 private:
     DeltaWriter(DeltaWriterOptions opt, MemTracker* parent, StorageEngine* storage_engine);
 
     Status _init();
-    Status _flush_memtable_async(bool eos = false);
     Status _flush_memtable();
     Status _build_current_tablet_schema(int64_t index_id, const POlapTableSchemaParam& table_schema_param,
                                         const TabletSchemaCSPtr& ori_tablet_schema);
@@ -191,15 +200,20 @@ private:
     // tablet schema owned by delta writer, all write will use this tablet schema
     // it's build from unsafe_tablet_schema_ref（stored when create tablet） and OlapTableSchema
     // every request will have it's own tablet schema so simple schema change can work
-    TabletSchemaSPtr _tablet_schema;
+    TabletSchemaCSPtr _tablet_schema;
 
     std::unique_ptr<FlushToken> _flush_token;
     std::unique_ptr<ReplicateToken> _replicate_token;
+    std::unique_ptr<SegmentFlushToken> _segment_flush_token;
     bool _with_rollback_log;
     // initial value is max value
-    size_t _memtable_buffer_row = -1;
+    size_t _memtable_buffer_row = std::numeric_limits<size_t>::max();
     bool _partial_schema_with_sort_key = false;
     std::atomic<bool> _is_immutable = false;
+
+    int64_t _last_write_ts = 0;
+    // for concurrency issue, we can't get write_buffer_size from memtable directly
+    int64_t _write_buffer_size = 0;
 };
 
 } // namespace starrocks

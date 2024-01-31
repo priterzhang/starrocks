@@ -99,6 +99,10 @@ public:
     RuntimeProfile::HighWaterMarkCounter* peak_flush_io_task_count = nullptr;
     RuntimeProfile::Counter* restore_io_task_count = nullptr;
     RuntimeProfile::HighWaterMarkCounter* peak_restore_io_task_count = nullptr;
+
+    RuntimeProfile::Counter* mem_table_finalize_timer = nullptr;
+    RuntimeProfile::Counter* flush_task_yield_times = nullptr;
+    RuntimeProfile::Counter* restore_task_yield_times = nullptr;
 };
 
 // major spill interfaces
@@ -198,6 +202,7 @@ public:
             const std::vector<const SpillPartitionInfo*>& parititons);
 
     const std::unique_ptr<SpillerWriter>& writer() { return _writer; }
+    const std::shared_ptr<SpillerReader>& reader() { return _reader; }
 
     const std::shared_ptr<spill::Serde>& serde() { return _serde; }
     BlockManager* block_manager() { return _block_manager; }
@@ -216,7 +221,7 @@ private:
     std::weak_ptr<SpillerFactory> _parent;
 
     std::unique_ptr<SpillerWriter> _writer;
-    std::unique_ptr<SpillerReader> _reader;
+    std::shared_ptr<SpillerReader> _reader;
 
     std::mutex _mutex;
 

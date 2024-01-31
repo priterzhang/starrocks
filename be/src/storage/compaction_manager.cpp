@@ -27,7 +27,7 @@ namespace starrocks {
 
 CompactionManager::CompactionManager() : _next_task_id(0) {}
 
-CompactionManager::~CompactionManager() {
+void CompactionManager::stop() {
     _stop.store(true, std::memory_order_release);
     if (_scheduler_thread.joinable()) {
         _scheduler_thread.join();
@@ -88,7 +88,7 @@ void CompactionManager::_schedule() {
                       << ", task_id:" << task_id << ", tablet_id:" << compaction_candidate.tablet->tablet_id()
                       << ", compaction_type:" << starrocks::to_string(compaction_candidate.type)
                       << ", compaction_score:" << compaction_candidate.score << " for round:" << _round
-                      << ", task_queue_size:" << candidates_size();
+                      << ", candidates_size:" << candidates_size();
             auto st = _compaction_pool->submit_func([compaction_candidate, task_id] {
                 auto compaction_task = compaction_candidate.tablet->create_compaction_task();
                 if (compaction_task != nullptr) {
@@ -172,6 +172,12 @@ void CompactionManager::update_candidates(std::vector<CompactionCandidate> candi
                 _compaction_candidates.emplace(std::move(candidate));
             }
         }
+        // if candidates size exceed max, remove the last one which has the lowest score
+        // too many candidates will cause too many resources occupied and make priority queue adjust too slow
+        while (_compaction_candidates.size() > config::max_compaction_candidate_num &&
+               !_compaction_candidates.empty()) {
+            _compaction_candidates.erase(std::prev(_compaction_candidates.end()));
+        }
     }
     _notify();
 }
@@ -231,8 +237,7 @@ bool CompactionManager::_check_precondition(const CompactionCandidate& candidate
             return false;
         }
         uint16_t num = running_base_tasks_num_for_dir(data_dir);
-        if (config::base_compaction_num_threads_per_disk > 0 &&
-            num >= config::base_compaction_num_threads_per_disk * 2) {
+        if (config::base_compaction_num_threads_per_disk > 0 && num >= config::base_compaction_num_threads_per_disk) {
             VLOG(2) << "skip tablet:" << tablet->tablet_id()
                     << " for limit of base compaction task per disk. disk path:" << data_dir->path()
                     << ", running num:" << num;

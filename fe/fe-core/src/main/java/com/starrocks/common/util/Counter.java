@@ -36,6 +36,7 @@ package com.starrocks.common.util;
 
 import com.starrocks.thrift.TCounterAggregateType;
 import com.starrocks.thrift.TCounterMergeType;
+import com.starrocks.thrift.TCounterMinMaxType;
 import com.starrocks.thrift.TCounterStrategy;
 import com.starrocks.thrift.TUnit;
 
@@ -69,16 +70,22 @@ public class Counter {
     }
 
     public boolean isSum() {
-        return Objects.equals(strategy.aggregate_type, TCounterAggregateType.SUM);
+        return Objects.equals(strategy.aggregate_type, TCounterAggregateType.SUM) ||
+                Objects.equals(strategy.aggregate_type, TCounterAggregateType.AVG_SUM);
     }
 
     public boolean isAvg() {
-        return Objects.equals(strategy.aggregate_type, TCounterAggregateType.AVG);
+        return Objects.equals(strategy.aggregate_type, TCounterAggregateType.AVG)
+                || Objects.equals(strategy.aggregate_type, TCounterAggregateType.SUM_AVG);
     }
 
     public boolean isSkipMerge() {
         return Objects.equals(strategy.merge_type, TCounterMergeType.SKIP_ALL)
                 || Objects.equals(strategy.merge_type, TCounterMergeType.SKIP_SECOND_MERGE);
+    }
+
+    public boolean isSkipMinMax() {
+        return Objects.equals(strategy.min_max_type, TCounterMinMaxType.SKIP_ALL);
     }
 
     public void setStrategy(TCounterStrategy strategy) {
@@ -91,7 +98,8 @@ public class Counter {
 
     public Counter(TUnit type, TCounterStrategy strategy, long value) {
         this.type = type.getValue();
-        if (strategy == null || strategy.aggregate_type == null || strategy.merge_type == null) {
+        if (strategy == null || strategy.aggregate_type == null || strategy.merge_type == null ||
+                strategy.min_max_type == null) {
             this.strategy = Counter.createStrategy(type);
         } else {
             this.strategy = strategy;
@@ -112,6 +120,7 @@ public class Counter {
         TCounterMergeType mergeType = TCounterMergeType.MERGE_ALL;
         strategy.aggregate_type = aggregateType;
         strategy.merge_type = mergeType;
+        strategy.min_max_type = TCounterMinMaxType.MIN_MAX_ALL;
         return strategy;
     }
 

@@ -43,6 +43,7 @@
 #include "gen_cpp/segment.pb.h"
 #include "gutil/macros.h"
 #include "runtime/global_dict/types.h"
+#include "storage/row_store_encoder_factory.h"
 #include "storage/tablet_schema.h"
 
 namespace starrocks {
@@ -55,6 +56,7 @@ class MemTracker;
 class WritableFile;
 class Chunk;
 class ColumnWriter;
+class Schema;
 
 extern const char* const k_segment_magic;
 extern const uint32_t k_segment_magic_length;
@@ -130,7 +132,9 @@ public:
 
     const DictColumnsValidMap& global_dict_columns_valid_info() { return _global_dict_columns_valid_info; }
 
-    std::string segment_path() const;
+    const std::string& segment_path() const;
+
+    uint64_t current_filesz() const;
 
 private:
     Status _write_short_key_index();
@@ -150,6 +154,7 @@ private:
     std::vector<uint32_t> _column_indexes;
     bool _has_key = true;
     std::vector<uint32_t> _sort_column_indexes;
+    std::unique_ptr<Schema> _schema_without_full_row_column;
 
     // num rows written when appending [partial] columns
     uint32_t _num_rows_written = 0;

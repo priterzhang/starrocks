@@ -28,6 +28,7 @@
 #include "storage/conjunctive_predicates.h"
 #include "storage/tablet.h"
 #include "storage/tablet_reader.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 
@@ -59,6 +60,7 @@ private:
     Status _init_scanner_columns(std::vector<uint32_t>& scanner_columns);
     Status _init_unused_output_columns(const std::vector<std::string>& unused_output_columns);
     Status _init_olap_reader(RuntimeState* state);
+    TCounterMinMaxType::type _get_counter_min_max_type(const std::string& metric_name);
     void _init_counter(RuntimeState* state);
     Status _init_global_dicts(TabletReaderParams* params);
     Status _read_chunk_from_storage([[maybe_unused]] RuntimeState* state, Chunk* chunk);
@@ -134,6 +136,7 @@ private:
     RuntimeProfile::Counter* _seg_zm_filtered_counter = nullptr;
     RuntimeProfile::Counter* _seg_rt_filtered_counter = nullptr;
     RuntimeProfile::Counter* _sk_filtered_counter = nullptr;
+    RuntimeProfile::Counter* _rows_after_sk_filtered_counter = nullptr;
     RuntimeProfile::Counter* _block_seek_timer = nullptr;
     RuntimeProfile::Counter* _block_seek_counter = nullptr;
     RuntimeProfile::Counter* _block_load_timer = nullptr;
@@ -148,6 +151,10 @@ private:
     RuntimeProfile::Counter* _segments_read_count = nullptr;
     RuntimeProfile::Counter* _total_columns_data_page_count = nullptr;
     RuntimeProfile::Counter* _read_pk_index_timer = nullptr;
+    RuntimeProfile::Counter* _pushdown_access_paths_counter = nullptr;
+    RuntimeProfile::Counter* _json_flatten_timer = nullptr;
+    RuntimeProfile::Counter* _access_path_hits_counter = nullptr;
+    RuntimeProfile::Counter* _access_path_unhits_counter = nullptr;
 };
 } // namespace pipeline
 } // namespace starrocks

@@ -37,21 +37,20 @@ package com.starrocks.analysis;
 import com.google.common.collect.Lists;
 import com.starrocks.authentication.AuthenticationMgr;
 import com.starrocks.authentication.UserAuthenticationInfo;
+import com.starrocks.common.ErrorReportException;
 import com.starrocks.common.UserException;
-import com.starrocks.mysql.privilege.Auth;
 import com.starrocks.mysql.privilege.MockedAuth;
 import com.starrocks.privilege.AuthorizationMgr;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.SetExecutor;
 import com.starrocks.qe.SqlModeHelper;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.analyzer.SetStmtAnalyzer;
 import com.starrocks.sql.ast.CreateUserStmt;
 import com.starrocks.sql.ast.SetPassVar;
 import com.starrocks.sql.ast.SetStmt;
-import com.starrocks.sql.ast.SystemVariable;
 import com.starrocks.sql.ast.StatementBase;
+import com.starrocks.sql.ast.SystemVariable;
 import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
@@ -64,13 +63,10 @@ import org.junit.Test;
 public class SetPassVarTest {
 
     @Mocked
-    private Auth auth;
-    @Mocked
     private ConnectContext ctx;
 
     @Before
     public void setUp() {
-        MockedAuth.mockedAuth(auth);
         MockedAuth.mockedConnectContext(ctx, "root", "192.168.1.1");
         UserIdentity currentUser = new UserIdentity("root", "192.168.1.1");
         ctx.setCurrentUserIdentity(currentUser);
@@ -83,7 +79,7 @@ public class SetPassVarTest {
         //  mode: SET PASSWORD FOR 'testUser' = 'testPass';
         stmt = new SetPassVar(new UserIdentity("testUser", "%"), "*88EEBA7D913688E7278E2AD071FDB5E76D76D34B");
         SetStmtAnalyzer.analyze(new SetStmt(Lists.newArrayList(stmt)), null);
-        Assert.assertEquals("testUser", stmt.getUserIdent().getQualifiedUser());
+        Assert.assertEquals("testUser", stmt.getUserIdent().getUser());
         Assert.assertEquals("*88EEBA7D913688E7278E2AD071FDB5E76D76D34B", new String(stmt.getPassword()));
         Assert.assertEquals("'testUser'@'%'", stmt.getUserIdent().toString());
 
@@ -110,7 +106,7 @@ public class SetPassVarTest {
         Assert.assertTrue(setVars.getResolvedExpression().getStringValue().contains("STRICT_TRANS_TABLES"));
     }
 
-    @Test(expected = SemanticException.class)
+    @Test(expected = ErrorReportException.class)
     public void testBadPassword() {
         SetPassVar stmt;
         //  mode: SET PASSWORD FOR 'testUser' = 'testPass';
@@ -136,12 +132,12 @@ public class SetPassVarTest {
 
     private static void ctxToTestUser() {
         starRocksAssert.getCtx().setCurrentUserIdentity(testUser);
-        starRocksAssert.getCtx().setQualifiedUser(testUser.getQualifiedUser());
+        starRocksAssert.getCtx().setQualifiedUser(testUser.getUser());
     }
 
     private static void ctxToRoot() {
         starRocksAssert.getCtx().setCurrentUserIdentity(UserIdentity.ROOT);
-        starRocksAssert.getCtx().setQualifiedUser(UserIdentity.ROOT.getQualifiedUser());
+        starRocksAssert.getCtx().setQualifiedUser(UserIdentity.ROOT.getUser());
     }
 
     private static void createUsers() throws Exception {

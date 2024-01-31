@@ -74,6 +74,11 @@ public:
     // [thread-safe and wait-free]
     void write_segment(const AsyncDeltaWriterSegmentRequest& req);
 
+    // This method will flush all the records in memtable to disk.
+    //
+    // [thread-safe and wait-free]
+    void flush();
+
     // [thread-safe and wait-free]
     void commit(AsyncDeltaWriterCallback* cb);
 
@@ -94,6 +99,13 @@ public:
 
     bool is_immutable() const { return _writer->is_immutable(); }
 
+    int64_t last_write_ts() const { return _writer->last_write_ts(); }
+
+    int64_t write_buffer_size() const { return _writer->write_buffer_size(); }
+
+    // Just for testing
+    DeltaWriter* writer() { return _writer.get(); }
+
 private:
     struct private_type {
         explicit private_type(int) {}
@@ -108,6 +120,7 @@ private:
         bool commit_after_write = false;
         bool abort = false;
         bool abort_with_log = false;
+        bool flush_after_write = false;
     };
 
     static int _execute(void* meta, bthread::TaskIterator<AsyncDeltaWriter::Task>& iter);
@@ -118,7 +131,6 @@ private:
     std::shared_ptr<DeltaWriter> _writer;
     bthread::ExecutionQueueId<Task> _queue_id;
     std::atomic<bool> _closed;
-    std::unique_ptr<starrocks::SegmentFlushToken> _segment_flush_executor = nullptr;
 };
 
 class CommittedRowsetInfo {

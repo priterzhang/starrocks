@@ -51,9 +51,9 @@ class LoadChannelTestForLakeTablet : public testing::Test {
 public:
     LoadChannelTestForLakeTablet() {
         _schema_id = next_id();
-        _mem_tracker = std::make_unique<MemTracker>(-1);
+        _mem_tracker = std::make_unique<MemTracker>(1024 * 1024);
         _location_provider = std::make_unique<lake::FixedLocationProvider>(kTestGroupPath);
-        _update_manager = std::make_unique<lake::UpdateManager>(_location_provider.get());
+        _update_manager = std::make_unique<lake::UpdateManager>(_location_provider.get(), _mem_tracker.get());
         _tablet_manager =
                 std::make_unique<lake::TabletManager>(_location_provider.get(), _update_manager.get(), 1024 * 1024);
 
@@ -190,20 +190,13 @@ protected:
         CHECK_OK(_tablet_manager->put_tablet_metadata(*new_tablet_metadata(10089)));
 
         auto load_mem_tracker = std::make_unique<MemTracker>(-1, "", _mem_tracker.get());
-        _load_channel = std::make_shared<LoadChannel>(_load_channel_mgr.get(), _tablet_manager.get(),
-                                                      UniqueId::gen_uid(), string(), 1000, std::move(load_mem_tracker));
+        _load_channel =
+                std::make_shared<LoadChannel>(_load_channel_mgr.get(), _tablet_manager.get(), UniqueId::gen_uid(),
+                                              next_id(), string(), 1000, std::move(load_mem_tracker));
     }
 
     void TearDown() override {
         _load_channel.reset();
-        ASSIGN_OR_ABORT(auto tablet, _tablet_manager->get_tablet(10086));
-        ASSERT_OK(tablet.delete_txn_log(kTxnId));
-        ASSIGN_OR_ABORT(tablet, _tablet_manager->get_tablet(10087));
-        ASSERT_OK(tablet.delete_txn_log(kTxnId));
-        ASSIGN_OR_ABORT(tablet, _tablet_manager->get_tablet(10088));
-        ASSERT_OK(tablet.delete_txn_log(kTxnId));
-        ASSIGN_OR_ABORT(tablet, _tablet_manager->get_tablet(10089));
-        ASSERT_OK(tablet.delete_txn_log(kTxnId));
         (void)fs::remove_all(kTestGroupPath);
         _tablet_manager->prune_metacache();
     }
@@ -213,7 +206,7 @@ protected:
         ASSIGN_OR_ABORT(auto fs, FileSystem::CreateSharedFromString(kTestGroupPath));
         auto path = _location_provider->segment_location(tablet_id, filename);
 
-        ASSIGN_OR_ABORT(auto seg, Segment::open(fs, path, 0, _tablet_schema));
+        ASSIGN_OR_ABORT(auto seg, Segment::open(fs, FileInfo{path}, 0, _tablet_schema));
 
         OlapReaderStatistics statistics;
         SegmentReadOptions opts;

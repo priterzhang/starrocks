@@ -225,8 +225,7 @@ TEST_F(RowsetMergerTest, horizontal_merge) {
     const int num_segment = 1 + rand() % max_segments;
     const int N = 500000 + rand() % 1000000;
     MergeConfig cfg;
-    cfg.chunk_size = 1000 + rand() % 2000;
-    LOG(INFO) << "merge test #rowset:" << num_segment << " #row:" << N << " chunk_size:" << cfg.chunk_size;
+    LOG(INFO) << "merge test #rowset:" << num_segment << " #row:" << N;
     vector<uint32_t> rssids(N);
     vector<vector<int64_t>> segments(num_segment);
     for (int i = 0; i < N; i++) {
@@ -274,7 +273,6 @@ TEST_F(RowsetMergerTest, vertical_merge) {
     const int num_segment = 2 + rand() % max_segments;
     const int N = 500000 + rand() % 1000000;
     MergeConfig cfg;
-    cfg.chunk_size = 1000 + rand() % 2000;
     cfg.algorithm = VERTICAL_COMPACTION;
     vector<uint32_t> rssids(N);
     vector<vector<int64_t>> segments(num_segment);
@@ -332,13 +330,11 @@ TEST_F(RowsetMergerTest, horizontal_merge_seq) {
     const int num_segment = 1 + rand() % max_segments;
     const int N = 500000 + rand() % 1000000;
     MergeConfig cfg;
-    cfg.chunk_size = 100 + rand() % 2000;
     // small size test
     //    const int num_segment = 3;
     //    const int N = 30;
     //    MergeConfig cfg;
-    //    cfg.chunk_size = 20;
-    LOG(INFO) << "seq merge test #rowset:" << num_segment << " #row:" << N << " chunk_size:" << cfg.chunk_size;
+    LOG(INFO) << "seq merge test #rowset:" << num_segment << " #row:" << N;
     vector<uint32_t> rssids(N);
     vector<vector<int64_t>> segments(num_segment);
     for (int i = 0; i < N; i++) {
@@ -385,7 +381,6 @@ TEST_F(RowsetMergerTest, vertical_merge_seq) {
     const int num_segment = 2 + rand() % max_segments;
     const int N = 500000 + rand() % 1000000;
     MergeConfig cfg;
-    cfg.chunk_size = 100 + rand() % 2000;
     cfg.algorithm = VERTICAL_COMPACTION;
     vector<uint32_t> rssids(N);
     vector<vector<int64_t>> segments(num_segment);
@@ -416,8 +411,8 @@ TEST_F(RowsetMergerTest, vertical_merge_seq) {
     TestRowsetWriter writer;
     Schema schema = ChunkHelper::convert_schema(_tablet->tablet_schema());
     ASSERT_TRUE(PrimaryKeyEncoder::create_column(schema, &writer.all_pks).ok());
-    writer.non_key_columns.emplace_back(std::move(Int16Column::create_mutable()));
-    writer.non_key_columns.emplace_back(std::move(Int32Column::create_mutable()));
+    writer.non_key_columns.emplace_back(Int16Column::create_mutable());
+    writer.non_key_columns.emplace_back(Int32Column::create_mutable());
     ASSERT_TRUE(compaction_merge_rowsets(*_tablet, version, rowsets, &writer, cfg).ok());
 
     ASSERT_EQ(pks.size(), writer.all_pks->size());

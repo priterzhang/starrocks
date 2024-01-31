@@ -93,21 +93,24 @@ public class LakeMaterializedViewTest {
 
     @BeforeClass
     public static void setUp() throws Exception {
-        Config.enable_experimental_mv = true;
         PseudoCluster.getOrCreateWithRandomPort(true, 3);
         cluster = PseudoCluster.getInstance();
         connectContext = UtFrameUtils.createDefaultCtx();
+
+        // set default config for async mvs
+        UtFrameUtils.setDefaultConfigForAsyncMVTest(connectContext);
+
         starRocksAssert = new StarRocksAssert(connectContext);
         starRocksAssert.withDatabase(DB).useDatabase(DB);
 
         new MockUp<StarOSAgent>() {
             @Mock
             public long getPrimaryComputeNodeIdByShard(long shardId, long workerGroupId) {
-                return GlobalStateMgr.getCurrentSystemInfo().getBackendIds(true).get(0);
+                return GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendIds(true).get(0);
             }
 
             @Mock
-            public FilePathInfo allocateFilePath(String storageVolumeId, long tableId) {
+            public FilePathInfo allocateFilePath(String storageVolumeId, long dbId, long tableId) {
                 FilePathInfo.Builder builder = FilePathInfo.newBuilder();
                 FileStoreInfo.Builder fsBuilder = builder.getFsInfoBuilder();
 
@@ -311,7 +314,8 @@ public class LakeMaterializedViewTest {
                         "distributed by hash(k2) buckets 3\n" +
                         "PROPERTIES(\n" +
                         "   'datacache.enable' = 'true',\n" +
-                        "   'enable_async_write_back' = 'true'\n" +
+                        "   'enable_async_write_back' = 'false',\n" +
+                        "   'datacache.partition_duration' = '6 day'\n" +
                         ")\n" +
                         "refresh async\n" +
                         "as select k2, sum(k3) as total from base_table group by k2;");
@@ -328,7 +332,7 @@ public class LakeMaterializedViewTest {
         FileCacheInfo cacheInfo = lakeMv.getPartitionFileCacheInfo(0L);
         Assert.assertTrue(cacheInfo.getEnableCache());
         Assert.assertEquals(-1, cacheInfo.getTtlSeconds());
-        Assert.assertTrue(cacheInfo.getAsyncWriteBack());
+        Assert.assertFalse(cacheInfo.getAsyncWriteBack());
 
         // replication num
         Assert.assertEquals(1L, lakeMv.getDefaultReplicationNum().longValue());
@@ -338,8 +342,9 @@ public class LakeMaterializedViewTest {
         System.out.println(ddlStmt);
         Assert.assertTrue(ddlStmt.contains("\"replication_num\" = \"1\""));
         Assert.assertTrue(ddlStmt.contains("\"datacache.enable\" = \"true\""));
-        Assert.assertTrue(ddlStmt.contains("\"enable_async_write_back\" = \"true\""));
+        Assert.assertTrue(ddlStmt.contains("\"enable_async_write_back\" = \"false\""));
         Assert.assertTrue(ddlStmt.contains("\"storage_volume\" = \"builtin_storage_volume\""));
+        Assert.assertTrue(ddlStmt.contains("\"datacache.partition_duration\" = \"6 days\""));
 
         // check task
         String mvTaskName = "mv-" + mv.getId();
