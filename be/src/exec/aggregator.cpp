@@ -380,7 +380,8 @@ Status Aggregator::prepare(RuntimeState* state, ObjectPool* pool, RuntimeProfile
             // Because intersect_count have two input types.
             // And intersect_count's first argument's type is alwasy Bitmap,
             // so we use its second arguments type as input.
-            if (fn.name.function_name == "intersect_count") {
+			if (fn.name.function_name == "intersect_count" || fn.name.function_name == "orthogonal_bitmap_intersect" || fn.name.function_name == "orthogonal_bitmap_difference"
+				|| fn.name.function_name == "bitmap_intersect_count_each_column" || fn.name.function_name == "bitmap_difference_count_each_column") {
                 arg_type = TypeDescriptor::from_thrift(fn.arg_types[1]);
             }
 
