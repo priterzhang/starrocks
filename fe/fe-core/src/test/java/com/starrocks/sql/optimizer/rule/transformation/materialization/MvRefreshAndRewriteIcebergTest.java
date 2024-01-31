@@ -17,7 +17,9 @@ package com.starrocks.sql.optimizer.rule.transformation.materialization;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.Partition;
+import com.starrocks.connector.iceberg.MockIcebergMetadata;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.plan.ConnectorPlanTestBase;
 import com.starrocks.sql.plan.PlanTestBase;
 import com.starrocks.utframe.UtFrameUtils;
 import org.junit.Assert;
@@ -35,6 +37,7 @@ public class MvRefreshAndRewriteIcebergTest extends MvRewriteTestBase {
     @BeforeClass
     public static void beforeClass() throws Exception {
         MvRewriteTestBase.beforeClass();
+        ConnectorPlanTestBase.mockCatalog(connectContext, MockIcebergMetadata.MOCKED_ICEBERG_CATALOG_NAME);
     }
 
     @Test
@@ -56,7 +59,6 @@ public class MvRefreshAndRewriteIcebergTest extends MvRewriteTestBase {
         starRocksAssert.dropMaterializedView(mvName);
         connectContext.getSessionVariable().setMaterializedViewRewriteMode("default");
     }
-
 
     @Test
     public void testStr2DateMVRefreshRewriteSingleTableWithView() throws Exception {
@@ -131,7 +133,7 @@ public class MvRefreshAndRewriteIcebergTest extends MvRewriteTestBase {
                     "     partitions=1/1");
             PlanTestBase.assertContains(plan, "IcebergScanNode\n" +
                     "     TABLE: part_tbl1\n" +
-                    "     PREDICATES: 13: d != '2023-08-01'");
+                    "     PREDICATES: 13: d != '2023-08-01', 13: d >= '2023-08-01'");
         }
         {
             String query = "select a, b, d, count(distinct t1.c)\n" +
@@ -718,8 +720,7 @@ public class MvRefreshAndRewriteIcebergTest extends MvRewriteTestBase {
             PlanTestBase.assertContains(plan, "0:OlapScanNode\n" +
                     "     TABLE: test_mv1\n" +
                     "     PREAGGREGATION: ON\n" +
-                    "     PREDICATES: ((16: d < '2023-08-01') OR ((16: d > '2023-08-01') AND " +
-                    "(16: d < '2023-08-02'))) OR (16: d > '2023-08-02')\n" +
+                    "     PREDICATES: 16: d != '2023-08-01', 16: d != '2023-08-02'\n" +
                     "     partitions=3/3");
         }
 
@@ -1075,7 +1076,7 @@ public class MvRefreshAndRewriteIcebergTest extends MvRewriteTestBase {
                     " inner join iceberg0.partitioned_db.part_tbl3 t3 on t1.d=t3.d " +
                     " where t1.d in ('2023-08-01', '2023-08-02') " +
                     " group by t1.d, t2.b, t3.c;";
-            String plan = getFragmentPlan(query);
+            String plan = getFragmentPlan(query, "MV");
             PlanTestBase.assertContains(plan, "UNION");
             PlanTestBase.assertContains(plan, "test_mv1");
         }
@@ -1201,6 +1202,7 @@ public class MvRefreshAndRewriteIcebergTest extends MvRewriteTestBase {
                 materializedView.getPartitions().stream().map(Partition::getName).sorted()
                         .collect(Collectors.toList());
         Assert.assertEquals(Arrays.asList("p20230801_20230802"), partitions);
+        connectContext.getSessionVariable().setMaterializedViewRewriteMode("force");
 
         {
             String query = "select t1.a, t2.b, t1.d, count(t1.c)\n" +
@@ -1271,7 +1273,7 @@ public class MvRefreshAndRewriteIcebergTest extends MvRewriteTestBase {
                     " inner join iceberg0.partitioned_db.part_tbl3 t3 on t1.d=t3.d \n" +
                     " where t1.d >= '2023-08-01' \n" +
                     " group by t1.a, t2.b, t1.d;";
-            String plan = getFragmentPlan(query);
+            String plan = getFragmentPlan(query, "MV");
             PlanTestBase.assertContains(plan, "UNION");
             PlanTestBase.assertContains(plan, "14:OlapScanNode\n" +
                     "     TABLE: test_mv1\n" +

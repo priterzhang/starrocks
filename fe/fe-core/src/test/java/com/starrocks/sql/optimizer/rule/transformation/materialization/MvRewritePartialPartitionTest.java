@@ -19,6 +19,7 @@ import com.starrocks.catalog.MaterializedView;
 import com.starrocks.connector.hive.HiveMetaClient;
 import com.starrocks.connector.hive.MockedHiveMetadata;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.plan.ConnectorPlanTestBase;
 import com.starrocks.sql.plan.PlanTestBase;
 import org.junit.After;
 import org.junit.Assert;
@@ -41,6 +42,7 @@ public class MvRewritePartialPartitionTest extends MvRewriteTestBase {
         starRocksAssert.withTable(cluster, "table_with_day_partition");
         starRocksAssert.withTable(cluster, "table_with_datetime_partition");
 
+        ConnectorPlanTestBase.mockHiveCatalog(connectContext);
         mockedHiveMetadata =
                 (MockedHiveMetadata) connectContext.getGlobalStateMgr().getMetadataMgr().
                         getOptionalMetadata(MockedHiveMetadata.MOCKED_HIVE_CATALOG_NAME).get();
@@ -1155,8 +1157,7 @@ public class MvRewritePartialPartitionTest extends MvRewriteTestBase {
             String plan5 = getFragmentPlan(query5);
             PlanTestBase.assertContains(plan5, "mv_on_view_1");
             PlanTestBase.assertContains(plan5, "UNION",
-                    "PREDICATES: (date_trunc('day', 15: id_datetime) < '1991-03-31 00:00:00')" +
-                            " OR (date_trunc('day', 15: id_datetime) >= '1991-04-03 00:00:00')");
+                    "PREDICATES: (15: id_datetime < '1991-03-31 00:00:00') OR (15: id_datetime >= '1991-04-03 00:00:00')");
             dropMv("test", "mv_on_view_1");
             starRocksAssert.dropView("view_with_expr");
         }

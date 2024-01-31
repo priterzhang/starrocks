@@ -85,6 +85,7 @@ size_t ColumnarSerde::_max_serialized_size(const ChunkPtr& chunk) const {
 }
 
 Status ColumnarSerde::serialize_to_block(SerdeContext& ctx, const ChunkPtr& chunk, BlockPtr block) {
+    DCHECK(block != nullptr) << "block should not be null";
     const auto& columns = chunk->columns();
     size_t max_serialized_size = _max_serialized_size(chunk);
     auto& serialize_buffer = ctx.aligned_buffer;
@@ -108,7 +109,7 @@ Status ColumnarSerde::serialize_to_block(SerdeContext& ctx, const ChunkPtr& chun
             }
         }
         size_t content_length = buf - head;
-        auto align_size = ALIGN_UP(content_length + meta_len, 4096);
+        auto align_size = ALIGN_UP(content_length + meta_len, PAGE_SIZE);
         serialize_buffer.resize(align_size);
         // only 8 bytes for serialized size if encoding is disable
         UNALIGNED_STORE64(serialize_buffer.data(), align_size - meta_len);
@@ -138,7 +139,7 @@ Status ColumnarSerde::serialize_to_block(SerdeContext& ctx, const ChunkPtr& chun
         }
         _update_encode_stats(column_stats);
         size_t content_length = buf - head;
-        auto align_size = ALIGN_UP(content_length + meta_len + padding_size, 4096);
+        auto align_size = ALIGN_UP(content_length + meta_len + padding_size, PAGE_SIZE);
         serialize_buffer.resize(align_size);
 
         // fill encoded size

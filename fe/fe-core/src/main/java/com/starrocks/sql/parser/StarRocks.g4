@@ -262,6 +262,11 @@ statement
     | showSqlBlackListStatement
     | showWhiteListStatement
 
+    // Backend BlackList
+    | addBackendBlackListStatement
+    | delBackendBlackListStatement
+    | showBackendBlackListStatement
+
     // Data Cache management statement
     | createDataCacheRuleStatement
     | showDataCacheRulesStatement
@@ -485,11 +490,12 @@ createTemporaryTableStatement
 
 createTableAsSelectStatement
     : CREATE TABLE (IF NOT EXISTS)? qualifiedName
-        ('(' identifier (',' identifier)* ')')?
+        ('(' (identifier (',' identifier)*  (',' indexDesc)* | indexDesc (',' indexDesc)*) ')')?
         keyDesc?
         comment?
         partitionDesc?
         distributionDesc?
+        orderByDesc?
         properties?
         AS queryStatement
     ;
@@ -611,12 +617,12 @@ columnNameWithComment
 // ------------------------------------------- Task Statement ----------------------------------------------------------
 
 submitTaskStatement
-    : SUBMIT setVarHint* TASK qualifiedName?
+    : SUBMIT TASK qualifiedName? properties?
     AS (createTableAsSelectStatement | insertStatement )
     ;
 
 dropTaskStatement
-    : DROP TASK qualifiedName
+    : DROP TASK qualifiedName FORCE?
     ;
 
 // ------------------------------------------- Materialized View Statement ---------------------------------------------
@@ -876,7 +882,7 @@ alterClause
     | addBackendClause
     | dropBackendClause
     | decommissionBackendClause
-    | modifyBackendHostClause
+    | modifyBackendClause
     | addComputeNodeClause
     | dropComputeNodeClause
     | modifyBrokerClause
@@ -945,8 +951,9 @@ decommissionBackendClause
    : DECOMMISSION BACKEND string (',' string)*
    ;
 
-modifyBackendHostClause
+modifyBackendClause
    : MODIFY BACKEND HOST string TO string
+   | MODIFY BACKEND string SET propertyList
    ;
 
 addComputeNodeClause
@@ -1099,17 +1106,17 @@ partitionRenameClause
 // ------------------------------------------- DML Statement -----------------------------------------------------------
 
 insertStatement
-    : explainDesc? INSERT setVarHint* (INTO | OVERWRITE) (qualifiedName | (FILES propertyList) | (BLACKHOLE '(' ')')) partitionNames?
+    : explainDesc? INSERT (INTO | OVERWRITE) (qualifiedName | (FILES propertyList) | (BLACKHOLE '(' ')')) partitionNames?
         (WITH LABEL label=identifier)? columnAliases?
         (queryStatement | (VALUES expressionsWithDefault (',' expressionsWithDefault)*))
     ;
 
 updateStatement
-    : explainDesc? withClause? UPDATE setVarHint* qualifiedName SET assignmentList fromClause (WHERE where=expression)?
+    : explainDesc? withClause? UPDATE qualifiedName SET assignmentList fromClause (WHERE where=expression)?
     ;
 
 deleteStatement
-    : explainDesc? withClause? DELETE setVarHint* FROM qualifiedName partitionNames? (USING using=relations)? (WHERE where=expression)?
+    : explainDesc? withClause? DELETE FROM qualifiedName partitionNames? (USING using=relations)? (WHERE where=expression)?
     ;
 
 // ------------------------------------------- Routine Statement -----------------------------------------------------------
@@ -1324,12 +1331,12 @@ typeList
 // ------------------------------------------- Load Statement ----------------------------------------------------------
 
 loadStatement
-    : LOAD setVarHint* LABEL label=labelName
+    : LOAD LABEL label=labelName
         data=dataDescList?
         broker=brokerDesc?
         (BY system=identifierOrString)?
         (PROPERTIES props=propertyList)?
-    | LOAD setVarHint* LABEL label=labelName
+    | LOAD LABEL label=labelName
         data=dataDescList?
         resource=resourceDesc
         (PROPERTIES props=propertyList)?
@@ -1814,6 +1821,20 @@ showWhiteListStatement
     : SHOW WHITELIST
     ;
 
+// ------------------------------------ backend BlackList Statement ---------------------------------------------------
+
+addBackendBlackListStatement
+    : ADD BACKEND BLACKLIST INTEGER_VALUE (',' INTEGER_VALUE)*
+    ;
+
+delBackendBlackListStatement
+    : DELETE BACKEND BLACKLIST INTEGER_VALUE (',' INTEGER_VALUE)*
+    ;
+
+showBackendBlackListStatement
+    : SHOW BACKEND BLACKLIST
+    ;
+
 // -------------------------------------- DataCache Management Statement --------------------------------------------
 
 dataCacheTarget
@@ -2039,7 +2060,7 @@ limitElement
     ;
 
 querySpecification
-    : SELECT setVarHint* setQuantifier? selectItem (',' selectItem)*
+    : SELECT setQuantifier? selectItem (',' selectItem)*
       fromClause
       ((WHERE where=expression)? (GROUP BY groupingElement)? (HAVING having=expression)?
        (QUALIFY qualifyFunction=selectItem comparisonOperator limit=INTEGER_VALUE)?)
@@ -2136,10 +2157,6 @@ outerAndSemiJoinType
 bracketHint
     : '[' identifier (',' identifier)* ']'
     | '[' identifier '|' primaryExpression literalExpressionList']'
-    ;
-
-setVarHint
-    : '/*+' SET_VAR '(' hintMap (',' hintMap)* ')' '*/'
     ;
 
 hintMap
@@ -2347,6 +2364,7 @@ aggregationFunction
     | MIN '(' setQuantifier? expression ')'
     | SUM '(' setQuantifier? expression ')'
     | ARRAY_AGG '(' setQuantifier? expression (ORDER BY sortItem (',' sortItem)*)? ')'
+    | ARRAY_AGG_DISTINCT '(' expression (ORDER BY sortItem (',' sortItem)*)? ')'
     | GROUP_CONCAT '(' setQuantifier? expression (',' expression)* (ORDER BY sortItem (',' sortItem)*)? (SEPARATOR expression)? ')'
     ;
 
@@ -2740,7 +2758,7 @@ number
 
 nonReserved
     : ACCESS | ACTIVE | AFTER | AGGREGATE | APPLY | ASYNC | AUTHORS | AVG | ADMIN | ANTI | AUTHENTICATION | AUTO_INCREMENT
-    | ARRAY_AGG
+    | ARRAY_AGG | ARRAY_AGG_DISTINCT
     | BACKEND | BACKENDS | BACKUP | BEGIN | BITMAP_UNION | BLACKLIST | BLACKHOLE | BINARY | BODY | BOOLEAN | BROKER | BUCKETS
     | BUILTIN | BASE
     | CACHE | CAST | CANCEL | CATALOG | CATALOGS | CEIL | CHAIN | CHARSET | CLEAN | CLEAR | CLUSTER | CLUSTERS | CURRENT | COLLATION | COLUMNS

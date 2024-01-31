@@ -70,9 +70,12 @@ select bitmap_to_string(bitmap_subset_in_range(v1, 2, 3)) from test_bitmap_table
 select bitmap_to_string(bitmap_subset_in_range(v1, -2, 3)) from test_bitmap_table1 order by k1;
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 select bitmap_to_string(orthogonal_bitmap_intersect(`v1`, `k1`, 1, 2)) from test_bitmap_table1;
 select bitmap_to_string(orthogonal_bitmap_intersect(`v1`, `k1`, 2, 3)) from test_bitmap_table1;
 =======
+=======
+>>>>>>> c529ed3f6bab456dbc87cc5b2cef87b6ab52ac50
 -- name: test_subdivide_bitmap
 
 CREATE TABLE `t1` (
@@ -165,6 +168,7 @@ insert into t4 select 6, 10, bitmap_agg(generate_series) from table(generate_ser
 insert into t4 select 6, 10, bitmap_agg(generate_series) from table(generate_series(8589934592, 8589934610));
 
 select c1, bitmap_min(subdivide_bitmap) as min_value, bitmap_to_string(subdivide_bitmap) from t4, subdivide_bitmap(t4.c3, c2) order by c1, min_value;
+<<<<<<< HEAD
 
 -- name: test_bitmap_to_array
 
@@ -197,3 +201,5 @@ truncate table t1;
 insert into t1 select 1, bitmap_agg(generate_series) from table(generate_series(1, 40));
 select bitmap_to_array(c2) from t1;
 >>>>>>> 6413369141d8c0efef1a408e58e3ab72a0b7f56c
+=======
+>>>>>>> c529ed3f6bab456dbc87cc5b2cef87b6ab52ac50

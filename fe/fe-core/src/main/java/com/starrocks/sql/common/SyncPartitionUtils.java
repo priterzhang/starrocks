@@ -32,6 +32,7 @@ import com.starrocks.catalog.BaseTableInfo;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.FunctionSet;
+import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.ListPartitionInfo;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.OlapTable;
@@ -549,7 +550,8 @@ public class SyncPartitionUtils {
                                                              Map<String, Map<Table, Set<String>>> mvToBaseNameRef,
                                                              Set<String> mvPotentialRefreshPartitionNames) {
         int curNameCount = needRefreshMvPartitionNames.size();
-        for (String needRefreshMvPartitionName : needRefreshMvPartitionNames) {
+        Set<String> copiedNeedRefreshMvPartitionNames = Sets.newHashSet(needRefreshMvPartitionNames);
+        for (String needRefreshMvPartitionName : copiedNeedRefreshMvPartitionNames) {
             // baseTable with its partitions by mv's partition
             Map<Table, Set<String>> baseNames = mvToBaseNameRef.get(needRefreshMvPartitionName);
             Set<String> mvNeedRefreshPartitions = Sets.newHashSet();
@@ -956,6 +958,9 @@ public class SyncPartitionUtils {
         Map<BaseTableInfo, Map<String, MaterializedView.BasePartitionInfo>> versionMap =
                 refreshContext.getBaseTableInfoVisibleVersionMap();
         if (versionMap == null) {
+            return;
+        }
+        if (StringUtils.isEmpty(tableName.getCatalog()) || InternalCatalog.isFromDefault(tableName)) {
             return;
         }
         Expr expr = mv.getPartitionRefTableExprs().get(0);

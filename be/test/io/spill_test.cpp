@@ -401,15 +401,14 @@ TEST_F(SpillTest, unsorted_process) {
             input.emplace_back(chunk->clone_unique());
             ASSERT_OK(mem_table->append(std::move(chunk)));
         }
+        ASSERT_OK(mem_table->done());
         //
-        size_t next_index = 0;
-        while (next_index < 500) {
-            auto st = mem_table->flush([&](const auto& chunk) {
-                chunk_equals(input[next_index++], chunk);
-                return Status::Yield();
-            });
-            ASSERT_TRUE(st.is_yield() || st.ok());
-        }
+        workgroup::YieldContext yield_ctx;
+        do {
+            yield_ctx.time_spent_ns = 0;
+            yield_ctx.need_yield = false;
+            ASSERT_OK(mem_table->finalize(yield_ctx));
+        } while (yield_ctx.need_yield);
     }
 }
 
@@ -550,6 +549,23 @@ TEST_F(SpillTest, partition_process) {
         }
         ASSERT_OK(spiller->flush(&dummy_rt_st, SyncExecutor{}, EmptyMemGuard{}));
     }
+}
+
+TEST_F(SpillTest, aligned_buffer) {
+    spill::AlignedBuffer buffer;
+    ASSERT_EQ(buffer.data(), nullptr);
+    auto is_aligned = [](void* ptr, std::size_t alignment) {
+        return reinterpret_cast<uintptr_t>(ptr) % alignment == 0;
+    };
+    buffer.resize(1);
+    buffer.data()[0] = '@';
+    ASSERT_TRUE(is_aligned(buffer.data(), 4096));
+    buffer.resize(8192);
+    ASSERT_EQ(buffer.data()[0], '@');
+    ASSERT_TRUE(is_aligned(buffer.data(), 4096));
+    buffer.resize(1);
+    ASSERT_EQ(buffer.data()[0], '@');
+    ASSERT_TRUE(is_aligned(buffer.data(), 4096));
 }
 
 /*

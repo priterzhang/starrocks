@@ -61,6 +61,7 @@
 #include "storage/dictionary_cache_manager.h"
 #include "storage/memtable_flush_executor.h"
 #include "storage/publish_version_manager.h"
+#include "storage/replication_txn_manager.h"
 #include "storage/rowset/rowset_meta.h"
 #include "storage/rowset/rowset_meta_manager.h"
 #include "storage/rowset/unique_rowset_id_generator.h"
@@ -111,6 +112,7 @@ StorageEngine::StorageEngine(const EngineOptions& options)
           _is_all_cluster_id_exist(true),
           _tablet_manager(new TabletManager(config::tablet_map_shard_size)),
           _txn_manager(new TxnManager(config::txn_map_shard_size, config::txn_shard_size, options.store_paths.size())),
+          _replication_txn_manager(new ReplicationTxnManager()),
           _rowset_id_generator(new UniqueRowsetIdGenerator(options.backend_uid)),
           _memtable_flush_executor(nullptr),
           _update_manager(new UpdateManager(options.update_mem_tracker)),
@@ -134,6 +136,7 @@ StorageEngine::StorageEngine(const EngineOptions& options)
 StorageEngine::~StorageEngine() {
     // tablet manager need to destruct before set storage engine instance to nullptr because tablet may access storage
     // engine instance during their destruction.
+    _update_manager.reset();
     _tablet_manager.reset();
 #ifdef BE_TEST
     if (_s_instance == this) {
@@ -239,6 +242,8 @@ Status StorageEngine::_open(const EngineOptions& options) {
     REGISTER_GAUGE_STARROCKS_METRIC(segment_replicate_queue_count, [this]() {
         return _segment_replicate_executor->get_thread_pool()->num_queued_tasks();
     })
+
+    RETURN_IF_ERROR_WITH_WARN(_replication_txn_manager->init(dirs), "init ReplicationTxnManager failed");
 
     return Status::OK();
 }
@@ -618,6 +623,8 @@ void StorageEngine::stop() {
 
     JOIN_THREAD(_pk_index_major_compaction_thread)
 
+    JOIN_THREAD(_pk_dump_thread);
+
 #ifdef USE_STAROS
     JOIN_THREAD(_local_pk_index_shared_data_gc_evict_thread)
 #endif
@@ -630,6 +637,7 @@ void StorageEngine::stop() {
         JOIN_THREADS(_path_gc_threads)
     }
 
+    JOIN_THREAD(_clear_expired_replcation_snapshots_thread)
 #undef JOIN_THREADS
 #undef JOIN_THREAD
 

@@ -29,6 +29,7 @@ import com.starrocks.common.AlreadyExistsException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.Pair;
+import com.starrocks.common.UserException;
 import com.starrocks.common.profile.Timer;
 import com.starrocks.common.profile.Tracers;
 import com.starrocks.connector.ConnectorMetadata;
@@ -43,6 +44,7 @@ import com.starrocks.connector.iceberg.cost.IcebergStatisticProvider;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.sql.ast.AlterTableStmt;
 import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.DropTableStmt;
 import com.starrocks.sql.ast.ListPartitionDesc;
@@ -65,6 +67,8 @@ import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.MetadataTableType;
 import org.apache.iceberg.MetadataTableUtils;
 import org.apache.iceberg.Metrics;
+import org.apache.iceberg.MetricsConfig;
+import org.apache.iceberg.MetricsModes;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
@@ -83,6 +87,7 @@ import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.ResidualEvaluator;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
+import org.apache.iceberg.metrics.ScanReport;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -116,12 +121,18 @@ import static com.starrocks.connector.iceberg.IcebergApiConverter.toIcebergApiSc
 import static com.starrocks.connector.iceberg.IcebergCatalogType.GLUE_CATALOG;
 import static com.starrocks.connector.iceberg.IcebergCatalogType.HIVE_CATALOG;
 import static com.starrocks.connector.iceberg.IcebergCatalogType.REST_CATALOG;
-import static com.starrocks.connector.iceberg.hive.IcebergHiveCatalog.LOCATION_PROPERTY;
 import static com.starrocks.server.CatalogMgr.ResourceMappingCatalog.isResourceMappingCatalog;
+import static org.apache.iceberg.TableProperties.DEFAULT_WRITE_METRICS_MODE_DEFAULT;
 
 public class IcebergMetadata implements ConnectorMetadata {
 
     private static final Logger LOG = LogManager.getLogger(IcebergMetadata.class);
+
+    public static final String LOCATION_PROPERTY = "location";
+    public static final String FILE_FORMAT = "file_format";
+    public static final String COMPRESSION_CODEC = "compression_codec";
+    public static final String COMMENT = "comment";
+
     private final String catalogName;
     private final HdfsEnvironment hdfsEnvironment;
     private final IcebergCatalog icebergCatalog;
@@ -136,13 +147,14 @@ public class IcebergMetadata implements ConnectorMetadata {
     private final Map<FileScanTaskSchema, Pair<String, String>> fileScanTaskSchemas = new ConcurrentHashMap<>();
     private final ExecutorService jobPlanningExecutor;
     private final ExecutorService refreshOtherFeExecutor;
+    private final IcebergMetricsReporter metricsReporter;
 
     public IcebergMetadata(String catalogName, HdfsEnvironment hdfsEnvironment, IcebergCatalog icebergCatalog,
                            ExecutorService jobPlanningExecutor, ExecutorService refreshOtherFeExecutor) {
         this.catalogName = catalogName;
         this.hdfsEnvironment = hdfsEnvironment;
         this.icebergCatalog = icebergCatalog;
-        new IcebergMetricsReporter().setThreadLocalReporter();
+        this.metricsReporter = new IcebergMetricsReporter();
         this.jobPlanningExecutor = jobPlanningExecutor;
         this.refreshOtherFeExecutor = refreshOtherFeExecutor;
     }
@@ -205,9 +217,36 @@ public class IcebergMetadata implements ConnectorMetadata {
         PartitionSpec partitionSpec = parsePartitionFields(schema, partitionColNames);
         Map<String, String> properties = stmt.getProperties() == null ? new HashMap<>() : stmt.getProperties();
         String tableLocation = properties.get(LOCATION_PROPERTY);
+        properties.put(COMMENT, stmt.getComment());
         Map<String, String> createTableProperties = IcebergApiConverter.rebuildCreateTableProperties(properties);
 
         return icebergCatalog.createTable(dbName, tableName, schema, partitionSpec, tableLocation, createTableProperties);
+    }
+
+    @Override
+    public void alterTable(AlterTableStmt stmt) throws UserException {
+        String dbName = stmt.getDbName();
+        String tableName = stmt.getTableName();
+        org.apache.iceberg.Table table = icebergCatalog.getTable(dbName, tableName);
+
+        if (table == null) {
+            throw new StarRocksConnectorException(
+                    "Failed to load iceberg table: " + stmt.getTbl().toString());
+        }
+
+        IcebergAlterTableExecutor executor = new IcebergAlterTableExecutor(stmt, table, icebergCatalog);
+        executor.execute();
+
+        synchronized (this) {
+            tables.remove(TableIdentifier.of(dbName, tableName));
+            try {
+                icebergCatalog.refreshTable(dbName, tableName, jobPlanningExecutor);
+            } catch (Exception exception) {
+                LOG.error("Failed to refresh caching iceberg table.");
+                icebergCatalog.invalidateCache(new CachingIcebergCatalog.IcebergTableName(dbName, tableName));
+            }
+            asyncRefreshOthersFeMetadataCache(dbName, tableName);
+        }
     }
 
     @Override
@@ -233,6 +272,7 @@ public class IcebergMetadata implements ConnectorMetadata {
             IcebergCatalogType catalogType = icebergCatalog.getIcebergCatalogType();
             org.apache.iceberg.Table icebergTable = icebergCatalog.getTable(dbName, tblName);
             Table table = IcebergApiConverter.toIcebergTable(icebergTable, catalogName, dbName, tblName, catalogType.name());
+            table.setComment(icebergTable.properties().getOrDefault(COMMENT, ""));
             tables.put(identifier, table);
             return table;
 
@@ -315,6 +355,8 @@ public class IcebergMetadata implements ConnectorMetadata {
                         return ImmutableList.of(partition);
                     }
                 }
+                // for empty table, use -1 as last updated time
+                return ImmutableList.of(new Partition(-1));
             } catch (IOException e) {
                 throw new StarRocksConnectorException("Failed to get partitions for table: " + table.getName(), e);
             }
@@ -418,7 +460,8 @@ public class IcebergMetadata implements ConnectorMetadata {
                         continue;
                     }
 
-                    srTypes.add(icebergTable.getColumn(partitionField.name()).getType());
+                    srTypes.add(icebergTable.getColumn(icebergTable.getPartitionSourceName(spec.schema(),
+                            partitionField)).getType());
                 }
 
                 if (icebergTable.hasPartitionTransformedEvolution()) {
@@ -453,16 +496,26 @@ public class IcebergMetadata implements ConnectorMetadata {
         org.apache.iceberg.Table nativeTbl = icebergTable.getNativeTable();
         Types.StructType schema = nativeTbl.schema().asStruct();
 
+        Map<String, MetricsModes.MetricsMode> fieldToMetricsMode = getIcebergMetricsConfig(icebergTable);
+        Tracers.record(Tracers.Module.EXTERNAL, "ICEBERG.MetricsConfig." + nativeTbl + ".write_metrics_mode_default",
+                DEFAULT_WRITE_METRICS_MODE_DEFAULT);
+        Tracers.record(Tracers.Module.EXTERNAL, "ICEBERG.MetricsConfig." + nativeTbl + ".non-default.size",
+                String.valueOf(fieldToMetricsMode.size()));
+        Tracers.record(Tracers.Module.EXTERNAL, "ICEBERG.MetricsConfig." + nativeTbl + ".non-default.columns",
+                fieldToMetricsMode.toString());
+
         List<ScalarOperator> scalarOperators = Utils.extractConjuncts(predicate);
         ScalarOperatorToIcebergExpr.IcebergContext icebergContext = new ScalarOperatorToIcebergExpr.IcebergContext(schema);
         Expression icebergPredicate = new ScalarOperatorToIcebergExpr().convert(scalarOperators, icebergContext);
 
-        TableScan scan = nativeTbl.newScan().useSnapshot(snapshotId);
+        TableScan scan = nativeTbl.newScan()
+                .useSnapshot(snapshotId)
+                .metricsReporter(metricsReporter)
+                .planWith(jobPlanningExecutor);
+
         if (enableCollectColumnStatistics()) {
             scan = scan.includeColumnStats();
         }
-
-        scan = scan.planWith(jobPlanningExecutor);
 
         if (icebergPredicate.op() != Expression.Operation.TRUE) {
             scan = scan.filter(icebergPredicate);
@@ -540,14 +593,54 @@ public class IcebergMetadata implements ConnectorMetadata {
             // Ignored
         }
 
-        IcebergMetricsReporter.lastReport().ifPresent(scanReportWithCounter ->
+        Optional<ScanReport> metrics = metricsReporter.getReporter(catalogName, dbName, tableName, snapshotId, icebergPredicate);
+
+        metrics.ifPresent(metric ->
                 Tracers.record(Tracers.Module.EXTERNAL, "ICEBERG.ScanMetrics." +
-                                scanReportWithCounter.getScanReport().tableName() + " / No_" +
-                                scanReportWithCounter.getCount(),
-                        scanReportWithCounter.getScanReport().scanMetrics().toString()));
+                                metric.tableName() + "["  + icebergPredicate + "]",
+                        metric.scanMetrics().toString()));
 
         splitTasks.put(key, icebergScanTasks);
         scannedTables.add(key);
+    }
+
+    /**
+     * To optimize the MetricsModes of the Iceberg tables, it's necessary to display the columns MetricsMode in the
+     * ICEBERG query profile.
+     * <br>
+     * None:
+     * <p>
+     * Under this mode, value_counts, null_value_counts, nan_value_counts, lower_bounds, upper_bounds
+     * are not persisted.
+     * </p>
+     * Counts:
+     * <p>
+     * Under this mode, only value_counts, null_value_counts, nan_value_counts are persisted.
+     * </p>
+     * Truncate:
+     * <p>
+     * Under this mode, value_counts, null_value_counts, nan_value_counts and truncated lower_bounds,
+     * upper_bounds are persisted.
+     * </p>
+     * Full:
+     * <p>
+     * Under this mode, value_counts, null_value_counts, nan_value_counts and full lower_bounds,
+     * upper_bounds are persisted.
+     * </p>
+     */
+    public static Map<String, MetricsModes.MetricsMode> getIcebergMetricsConfig(IcebergTable table) {
+        MetricsModes.MetricsMode defaultMode = MetricsModes.fromString(DEFAULT_WRITE_METRICS_MODE_DEFAULT);
+        MetricsConfig metricsConf = MetricsConfig.forTable(table.getNativeTable());
+        Map<String, MetricsModes.MetricsMode> filedToMetricsMode = Maps.newHashMap();
+        for (Types.NestedField field : table.getNativeTable().schema().columns()) {
+            MetricsModes.MetricsMode mode = metricsConf.columnMode(field.name());
+            // To reduce printing, only print specific metrics that are not in the
+            // DEFAULT_WRITE_METRICS_MODE_DEFAULT: truncate(16) mode
+            if (!mode.equals(defaultMode)) {
+                filedToMetricsMode.put(field.name(), mode);
+            }
+        }
+        return filedToMetricsMode;
     }
 
     @Override
@@ -632,6 +725,7 @@ public class IcebergMetadata implements ConnectorMetadata {
             IcebergTable icebergTable = (IcebergTable) table;
             String dbName = icebergTable.getRemoteDbName();
             String tableName = icebergTable.getRemoteTableName();
+            tables.remove(TableIdentifier.of(dbName, tableName));
             try {
                 icebergCatalog.refreshTable(dbName, tableName, jobPlanningExecutor);
             } catch (Exception e) {
@@ -817,10 +911,10 @@ public class IcebergMetadata implements ConnectorMetadata {
     @Override
     public void clear() {
         splitTasks.clear();
-        tables.clear();
         databases.clear();
+        tables.clear();
         scannedTables.clear();
-        IcebergMetricsReporter.remove();
+        metricsReporter.clear();
     }
 
     interface BatchWrite {

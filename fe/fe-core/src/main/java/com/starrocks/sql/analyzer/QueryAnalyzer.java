@@ -48,8 +48,8 @@ import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.common.Pair;
-import com.starrocks.meta.lock.LockType;
-import com.starrocks.meta.lock.Locker;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.privilege.ranger.SecurityPolicyRewriteRule;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
@@ -713,7 +713,7 @@ public class QueryAnalyzer {
                 queryOutputScope = process(node.getQueryStatement(), scope);
             } catch (SemanticException e) {
                 throw new SemanticException("View " + node.getName() + " references invalid table(s) or column(s) or " +
-                        "function(s) or definer/invoker of view lack rights to use them");
+                        "function(s) or definer/invoker of view lack rights to use them: " + e.getMessage(), e);
             }
             View view = node.getView();
             List<Field> fields = Lists.newArrayList();
@@ -884,10 +884,14 @@ public class QueryAnalyzer {
                             node.getFunctionName().getFunction(), node.getFunctionParams().getNamedArgStr());
                 }
             }
+
             if (namesArray != null) {
                 Preconditions.checkState(fn.hasNamedArg());
-                node.getFunctionParams().reorderNamedArg(fn.getArgNames());
+                node.getFunctionParams().reorderNamedArgAndAppendDefaults(fn);
+            } else if (node.getFunctionParams().exprs().size() < fn.getNumArgs()) {
+                node.getFunctionParams().appendPositionalDefaultArgExprs(fn);
             }
+            Preconditions.checkState(node.getFunctionParams().exprs().size() == fn.getNumArgs());
 
             if (!(fn instanceof TableFunction)) {
                 throw new SemanticException("'%s(%s)' is not table function", node.getFunctionName().getFunction(),

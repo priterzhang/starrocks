@@ -63,12 +63,14 @@ import com.starrocks.sql.ast.QueryRelation;
 import com.starrocks.sql.ast.QueryStatement;
 import com.starrocks.sql.ast.StatementBase;
 import com.starrocks.sql.optimizer.ExpressionContext;
+import com.starrocks.sql.optimizer.JoinHelper;
 import com.starrocks.sql.optimizer.MaterializationContext;
 import com.starrocks.sql.optimizer.MvPlanContextBuilder;
 import com.starrocks.sql.optimizer.OptExpression;
 import com.starrocks.sql.optimizer.OptExpressionVisitor;
 import com.starrocks.sql.optimizer.Optimizer;
 import com.starrocks.sql.optimizer.OptimizerConfig;
+import com.starrocks.sql.optimizer.QueryMaterializationContext;
 import com.starrocks.sql.optimizer.Utils;
 import com.starrocks.sql.optimizer.base.ColumnRefFactory;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
@@ -76,6 +78,7 @@ import com.starrocks.sql.optimizer.base.PhysicalPropertySet;
 import com.starrocks.sql.optimizer.operator.AggType;
 import com.starrocks.sql.optimizer.operator.Operator;
 import com.starrocks.sql.optimizer.operator.OperatorBuilderFactory;
+import com.starrocks.sql.optimizer.operator.OperatorType;
 import com.starrocks.sql.optimizer.operator.ScanOperatorPredicates;
 import com.starrocks.sql.optimizer.operator.logical.LogicalAggregationOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalFilterOperator;
@@ -93,6 +96,7 @@ import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.CompoundPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ConstantOperator;
 import com.starrocks.sql.optimizer.operator.scalar.InPredicateOperator;
+import com.starrocks.sql.optimizer.operator.scalar.IsNullPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperatorVisitor;
 import com.starrocks.sql.optimizer.rewrite.ReplaceColumnRefRewriter;
@@ -103,6 +107,7 @@ import com.starrocks.sql.optimizer.transformer.RelationTransformer;
 import com.starrocks.sql.optimizer.transformer.SqlToScalarOperatorTranslator;
 import com.starrocks.sql.optimizer.transformer.TransformerContext;
 import com.starrocks.sql.parser.ParsingException;
+import org.apache.commons.collections4.SetUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -150,7 +155,7 @@ public class MvUtils {
                 logMVPrepare(connectContext, "Table/MaterializedView {} has related materialized views: {}",
                         table.getName(), mvIds);
                 newMvIds.addAll(mvIds);
-            } else {
+            } else if (currentLevel == 0) {
                 logMVPrepare(connectContext, "Table/MaterializedView {} has no related materialized views, " +
                                 "identifier:{}", table.getName(), table.getTableIdentifier());
             }
@@ -299,6 +304,9 @@ public class MvUtils {
     }
 
     public static List<LogicalOlapScanOperator> getOlapScanNode(OptExpression root) {
+        if (root == null) {
+            return Lists.newArrayList();
+        }
         List<LogicalOlapScanOperator> olapScanOperators = Lists.newArrayList();
         getOlapScanNode(root, olapScanOperators);
         return olapScanOperators;
@@ -318,15 +326,38 @@ public class MvUtils {
         if (root == null) {
             return false;
         }
+        // 1. check whether is SPJ first
         if (isLogicalSPJ(root)) {
             return true;
         }
-        if (isLogicalSPJG(root)) {
-            LogicalAggregationOperator agg = (LogicalAggregationOperator) root.getOp();
-            // having is not supported now
-            return agg.getPredicate() == null;
+        // 2. check whether it's SPJG then
+        return isLogicalSPJG(root);
+    }
+
+    public static String getInvalidReason(OptExpression expr, boolean inlineView) {
+        List<Operator> operators = collectOperators(expr);
+        String viewRewriteHint = inlineView ? "no view rewrite" : "view rewrite";
+        if (operators.stream().anyMatch(op -> !isLogicalSPJGOperator(op))) {
+            String nonSPJGOperators =
+                    operators.stream().filter(x -> !isLogicalSPJGOperator(x))
+                            .map(Operator::toString)
+                            .collect(Collectors.joining(","));
+            return String.format("MV contains non-SPJG operators(%s): %s", viewRewriteHint, nonSPJGOperators);
         }
-        return false;
+        return String.format("MV is not SPJG structure(%s)", viewRewriteHint);
+    }
+
+    private static List<Operator> collectOperators(OptExpression expr) {
+        List<Operator> operators = Lists.newArrayList();
+        collectOperators(expr, operators);
+        return operators;
+    }
+
+    private static void collectOperators(OptExpression expr, List<Operator> result) {
+        result.add(expr.getOp());
+        for (OptExpression child : expr.getInputs()) {
+            collectOperators(child, result);
+        }
     }
 
     public static boolean isLogicalSPJG(OptExpression root) {
@@ -343,19 +374,28 @@ public class MvUtils {
         }
         Operator operator = root.getOp();
         if (!(operator instanceof LogicalAggregationOperator)) {
-            if (level == 0) {
+            return level == 0 ? false : isLogicalSPJ(root);
+        } else {
+            LogicalAggregationOperator agg = (LogicalAggregationOperator) operator;
+            if (agg.getType() != AggType.GLOBAL) {
                 return false;
-            } else {
-                return isLogicalSPJ(root);
             }
+            // Aggregate nested with aggregate is not supported yet.
+            // eg:
+            // create view v1 as
+            // select count(distinct cnt)
+            // from
+            //   (
+            //      select c_city, count(*) as cnt
+            //      from customer
+            //      group by c_city
+            //    ) t
+            if (level > 0) {
+                return false;
+            }
+            OptExpression child = root.inputAt(0);
+            return isLogicalSPJG(child, level + 1);
         }
-        LogicalAggregationOperator agg = (LogicalAggregationOperator) operator;
-        if (agg.getType() != AggType.GLOBAL) {
-            return false;
-        }
-
-        OptExpression child = root.inputAt(0);
-        return isLogicalSPJG(child, level + 1);
     }
 
     /**
@@ -383,6 +423,14 @@ public class MvUtils {
         return true;
     }
 
+    public static boolean isLogicalSPJGOperator(Operator operator) {
+        return (operator instanceof LogicalScanOperator)
+                || (operator instanceof LogicalProjectOperator)
+                || (operator instanceof LogicalFilterOperator)
+                || (operator instanceof LogicalJoinOperator)
+                || (operator instanceof LogicalAggregationOperator);
+    }
+
     public static Pair<OptExpression, LogicalPlan> getRuleOptimizedLogicalPlan(
             MaterializedView mv,
             String sql,
@@ -405,7 +453,7 @@ public class MvUtils {
         QueryRelation query = ((QueryStatement) mvStmt).getQueryRelation();
         TransformerContext transformerContext =
                 new TransformerContext(columnRefFactory, connectContext, inlineView);
-        LogicalPlan logicalPlan = new RelationTransformer(transformerContext).transformWithSelectLimit(query);
+        LogicalPlan logicalPlan = new RelationTransformer(transformerContext).transform(query);
         Optimizer optimizer = new Optimizer(optimizerConfig);
         OptExpression optimizedPlan = optimizer.optimize(
                 connectContext,
@@ -462,25 +510,25 @@ public class MvUtils {
     }
 
     // get all predicates within and below root
-    public static List<ScalarOperator> getAllValidPredicates(OptExpression root) {
-        List<ScalarOperator> predicates = Lists.newArrayList();
+    public static Set<ScalarOperator> getAllValidPredicates(OptExpression root) {
+        Set<ScalarOperator> predicates = Sets.newHashSet();
         getAllValidPredicates(root, predicates);
         return predicates;
     }
 
-    public static List<ScalarOperator> getAllValidPredicates(ScalarOperator conjunct) {
+    public static Set<ScalarOperator> getAllValidPredicates(ScalarOperator conjunct) {
         if (conjunct == null) {
-            return Lists.newArrayList();
+            return Sets.newHashSet();
         }
         return Utils.extractConjuncts(conjunct).stream().filter(MvUtils::isValidPredicate)
-                .collect(Collectors.toList());
+                .collect(Collectors.toSet());
     }
 
-    // get all predicates within and below root
-    public static List<ScalarOperator> getAllPredicates(OptExpression root) {
-        List<ScalarOperator> predicates = Lists.newArrayList();
-        getAllPredicates(root, x -> true, predicates);
-        return predicates;
+    public static List<ColumnRefOperator> getPredicateColumns(OptExpression root) {
+        List<ColumnRefOperator> res = Lists.newArrayList();
+        Set<ScalarOperator> predicates = getAllValidPredicates(root);
+        SetUtils.emptyIfNull(predicates).forEach(x -> x.getColumnRefs(res));
+        return res;
     }
 
     // If join is not cross/inner join, MV Rewrite must rewrite, otherwise may cause bad results.
@@ -495,13 +543,13 @@ public class MvUtils {
     //select count(1)
     //          from customer left outer join orders on c_custkey = o_custkey
     //          where o_comment not like '%special%requests%';
-    public static List<ScalarOperator> getJoinOnPredicates(OptExpression root) {
-        List<ScalarOperator> predicates = Lists.newArrayList();
+    public static Set<ScalarOperator> getJoinOnPredicates(OptExpression root) {
+        Set<ScalarOperator> predicates = Sets.newHashSet();
         getJoinOnPredicates(root, predicates);
         return predicates;
     }
 
-    private static void getJoinOnPredicates(OptExpression root, List<ScalarOperator> predicates) {
+    private static void getJoinOnPredicates(OptExpression root, Set<ScalarOperator> predicates) {
         Operator operator = root.getOp();
 
         if (operator instanceof LogicalJoinOperator) {
@@ -521,17 +569,6 @@ public class MvUtils {
         }
     }
 
-    public static ScalarOperator rewriteOptExprCompoundPredicate(List<ScalarOperator> conjuncts,
-                                                                 ReplaceColumnRefRewriter columnRefRewriter) {
-        ScalarOperator compoundPredicate = null;
-        if (!conjuncts.isEmpty()) {
-            compoundPredicate = Utils.compoundAnd(conjuncts);
-            compoundPredicate = columnRefRewriter.rewrite(compoundPredicate.clone());
-        }
-        compoundPredicate = MvUtils.canonizePredicateForRewrite(compoundPredicate);
-        return compoundPredicate;
-    }
-
     public static ReplaceColumnRefRewriter getReplaceColumnRefWriter(OptExpression root,
                                                                      ColumnRefFactory columnRefFactory) {
         Map<ColumnRefOperator, ScalarOperator> mvLineage = LineageFactory.getLineage(root, columnRefFactory);
@@ -540,14 +577,14 @@ public class MvUtils {
 
     private static void collectPredicates(List<ScalarOperator> conjuncts,
                                           Function<ScalarOperator, Boolean> supplier,
-                                          List<ScalarOperator> predicates) {
+                                          Set<ScalarOperator> predicates) {
         conjuncts.stream().filter(p -> supplier.apply(p)).forEach(predicates::add);
     }
 
     // push-down predicates are excluded when calculating compensate predicates,
     // because they are derived from equivalence class, the original predicates have be considered
     private static void collectValidPredicates(List<ScalarOperator> conjuncts,
-                                               List<ScalarOperator> predicates) {
+                                               Set<ScalarOperator> predicates) {
         collectPredicates(conjuncts, MvUtils::isValidPredicate, predicates);
     }
 
@@ -559,12 +596,84 @@ public class MvUtils {
         return predicate.isPushdown() || predicate.isRedundant();
     }
 
+    // for A inner join B A.a = B.b;
+    // A.a is not null and B.b is not null can be deduced from join.
+    // This function only extracts predicates from inner/semi join and scan node,
+    // which scan node will exclude IsNullPredicateOperator predicates if it's not null
+    // and its column ref is in the join's keys
+    public static Set<ScalarOperator> getPredicateForRewrite(OptExpression root) {
+        Set<ScalarOperator> result = Sets.newHashSet();
+        OptExpressionVisitor predicateVisitor = new OptExpressionVisitor<Object, ColumnRefSet>() {
+            @Override
+            public Object visit(OptExpression optExpression, ColumnRefSet context) {
+                for (OptExpression child : optExpression.getInputs()) {
+                    child.getOp().accept(this, child, null);
+                }
+                return null;
+            }
+
+            public Object visitLogicalTableScan(OptExpression optExpression, ColumnRefSet context) {
+                List<ScalarOperator> conjuncts = Utils.extractConjuncts(optExpression.getOp().getPredicate());
+                for (ScalarOperator conjunct : conjuncts) {
+                    if (!isValidPredicate(conjunct)) {
+                        continue;
+                    }
+                    if (conjunct instanceof IsNullPredicateOperator) {
+                        IsNullPredicateOperator isNullPredicateOperator = conjunct.cast();
+                        if (isNullPredicateOperator.isNotNull() && context != null
+                                && context.containsAll(isNullPredicateOperator.getUsedColumns())) {
+                            // if column ref is join key and column ref is not null can be ignored for inner and semi join
+                            continue;
+                        }
+                    }
+                    result.add(conjunct);
+                }
+                return null;
+            }
+
+            public Object visitLogicalJoin(OptExpression optExpression, ColumnRefSet context) {
+                LogicalJoinOperator joinOperator = optExpression.getOp().cast();
+
+                ColumnRefSet joinKeyColumns = new ColumnRefSet();
+                JoinOperator joinType = joinOperator.getJoinType();
+                if (joinType.isInnerJoin() || joinType.isCrossJoin() || joinType.isSemiJoin()) {
+                    List<ScalarOperator> onConjuncts = Utils.extractConjuncts(joinOperator.getOnPredicate());
+                    ColumnRefSet leftChildColumns = optExpression.inputAt(0).getOutputColumns();
+                    ColumnRefSet rightChildColumns = optExpression.inputAt(1).getOutputColumns();
+                    List<BinaryPredicateOperator> eqOnPredicates = JoinHelper.getEqualsPredicate(
+                            leftChildColumns, rightChildColumns, onConjuncts);
+                    eqOnPredicates.forEach(predicate -> joinKeyColumns.union(predicate.getUsedColumns()));
+                    if (context != null) {
+                        joinKeyColumns.union(context);
+                    }
+                    optExpression.inputAt(0).getOp().accept(this, optExpression.inputAt(0), joinKeyColumns);
+                    optExpression.inputAt(1).getOp().accept(this, optExpression.inputAt(1), joinKeyColumns);
+                } else if (joinType.isLeftOuterJoin() || joinType.isLeftAntiJoin()) {
+                    optExpression.inputAt(0).getOp().accept(this, optExpression.inputAt(0), joinKeyColumns);
+                } else if (joinType.isRightOuterJoin() || joinType.isRightAntiJoin()) {
+                    optExpression.inputAt(1).getOp().accept(this, optExpression.inputAt(1), joinKeyColumns);
+                }
+                List<ScalarOperator> conjuncts = Utils.extractConjuncts(
+                        Utils.compoundAnd(joinOperator.getPredicate(), joinOperator.getOnPredicate()));
+                for (ScalarOperator conjunct : conjuncts) {
+                    if (!isValidPredicate(conjunct)) {
+                        continue;
+                    }
+                    result.add(conjunct);
+                }
+                return null;
+            }
+        };
+        root.getOp().accept(predicateVisitor, root, null);
+        return result;
+    }
+
     /**
      * Get all predicates by filtering according the input `supplier`.
      */
     private static void getAllPredicates(OptExpression root,
                                          Function<ScalarOperator, Boolean> supplier,
-                                         List<ScalarOperator> predicates) {
+                                         Set<ScalarOperator> predicates) {
         Operator operator = root.getOp();
 
         // Ignore aggregation predicates, because aggregation predicates should be rewritten after
@@ -589,7 +698,7 @@ public class MvUtils {
      * Get all valid predicates from input opt expression. `valid` predicate means this predicate is not
      * a pushed-down predicate or redundant predicate among others.
      */
-    private static void getAllValidPredicates(OptExpression root, List<ScalarOperator> predicates) {
+    private static void getAllValidPredicates(OptExpression root, Set<ScalarOperator> predicates) {
         getAllPredicates(root, MvUtils::isValidPredicate, predicates);
     }
 
@@ -613,14 +722,25 @@ public class MvUtils {
      * 2. if you need to rewrite src predicate to target predicate, should use `canonizePredicateForRewrite`
      *  both rather than one use `canonizePredicate` or `canonizePredicateForRewrite`.
      */
-    public static ScalarOperator canonizePredicateForRewrite(ScalarOperator predicate) {
+    public static ScalarOperator canonizePredicateForRewrite(QueryMaterializationContext queryMaterializationContext,
+                                                             ScalarOperator predicate) {
         if (predicate == null) {
             return null;
         }
-        // do not change original predicate, clone it here
-        ScalarOperator cloned = predicate.clone();
-        ScalarOperatorRewriter rewrite = new ScalarOperatorRewriter();
-        return rewrite.rewrite(cloned, ScalarOperatorRewriter.MV_SCALAR_REWRITE_RULES);
+        return queryMaterializationContext == null ?
+                new ScalarOperatorRewriter().rewrite(predicate.clone(), ScalarOperatorRewriter.MV_SCALAR_REWRITE_RULES)
+                : queryMaterializationContext.getCanonizedPredicate(predicate);
+    }
+
+    public static Collection<ScalarOperator> canonizePredicatesForRewrite(
+            QueryMaterializationContext queryMaterializationContext,
+            Collection<ScalarOperator> predicates) {
+        if (predicates == null || predicates.isEmpty()) {
+            return predicates;
+        }
+        return predicates.stream()
+                .map(x -> canonizePredicateForRewrite(queryMaterializationContext, x))
+                .collect(Collectors.toSet());
     }
 
     public static ScalarOperator getCompensationPredicateForDisjunctive(ScalarOperator src, ScalarOperator target) {
@@ -934,13 +1054,8 @@ public class MvUtils {
         return true;
     }
 
-    public static List<ScalarOperator> compensatePartitionPredicateForHiveScan(LogicalHiveScanOperator scanOperator,
-                                                                               boolean isCompensate) {
+    public static List<ScalarOperator> compensatePartitionPredicateForHiveScan(LogicalHiveScanOperator scanOperator) {
         ScanOperatorPredicates scanOperatorPredicates = scanOperator.getScanOperatorPredicates();
-        if (!isCompensate) {
-            return scanOperatorPredicates.getPrunedPartitionConjuncts();
-        }
-
         List<ScalarOperator> partitionPredicates = Lists.newArrayList();
 
         Preconditions.checkState(scanOperator.getTable().isHiveTable());
@@ -958,7 +1073,8 @@ public class MvUtils {
         List<Range<PartitionKey>> ranges = Lists.newArrayList();
         for (PartitionKey selectedPartitionKey : scanOperatorPredicates.getSelectedPartitionKeys()) {
             try {
-                LiteralExpr expr = PartitionUtil.addOffsetForLiteral(selectedPartitionKey.getKeys().get(0), 1);
+                LiteralExpr expr = PartitionUtil.addOffsetForLiteral(selectedPartitionKey.getKeys().get(0), 1,
+                        PartitionUtil.getDateTimeInterval(hiveTable, hiveTable.getPartitionColumns().get(0)));
                 PartitionKey partitionKey = new PartitionKey(ImmutableList.of(expr), selectedPartitionKey.getTypes());
                 ranges.add(Range.closedOpen(selectedPartitionKey, partitionKey));
             } catch (AnalysisException e) {
@@ -977,6 +1093,11 @@ public class MvUtils {
         return partitionPredicates;
     }
 
+    public static final ImmutableList<OperatorType> SUPPORTED_PARTITION_COMPENSATE_SCAN_TYPES =
+            ImmutableList.<OperatorType>builder()
+            .add(OperatorType.LOGICAL_OLAP_SCAN)
+            .add(OperatorType.LOGICAL_HIVE_SCAN)
+            .build();
     /**
      * - if `isCompensate` is true, use `selectedPartitionIds` to compensate complete partition ranges
      *  with lower and upper bound.
@@ -1002,26 +1123,28 @@ public class MvUtils {
      *      `partitionPredicate` : k1>='2020-02-11'
      *      however for mv  we need: k1>='2020-02-11' and k1 < "2020-03-01"
      */
-    public static ScalarOperator compensatePartitionPredicate(OptExpression plan,
+    public static ScalarOperator compensatePartitionPredicate(MaterializationContext mvContext,
                                                               ColumnRefFactory columnRefFactory,
-                                                              boolean isCompensate) {
-        List<LogicalScanOperator> scanOperators = MvUtils.getScanOperator(plan);
+                                                              OptExpression queryExpression) {
+        List<LogicalScanOperator> scanOperators = MvUtils.getScanOperator(queryExpression);
         if (scanOperators.isEmpty()) {
             return ConstantOperator.createBoolean(true);
         }
 
         List<ScalarOperator> partitionPredicates = Lists.newArrayList();
+        boolean isCompensatePartition = mvContext.getOrInitCompensatePartitionPredicate(queryExpression);
+        // Compensate partition predicates and add them into query predicate.
+        Map<Pair<LogicalScanOperator, Boolean>, List<ScalarOperator>> scanOperatorScalarOperatorMap =
+                mvContext.getScanOpToPartitionCompensatePredicates();
         for (LogicalScanOperator scanOperator : scanOperators) {
-            List<ScalarOperator> partitionPredicate = null;
-            if (scanOperator instanceof LogicalOlapScanOperator) {
-                partitionPredicate = compensatePartitionPredicateForOlapScan((LogicalOlapScanOperator) scanOperator,
-                        columnRefFactory, isCompensate);
-            } else if (scanOperator instanceof LogicalHiveScanOperator) {
-                partitionPredicate = compensatePartitionPredicateForHiveScan((LogicalHiveScanOperator) scanOperator,
-                        isCompensate);
-            } else {
+            if (!SUPPORTED_PARTITION_COMPENSATE_SCAN_TYPES.contains(scanOperator.getOpType())) {
                 continue;
             }
+            List<ScalarOperator> partitionPredicate = scanOperatorScalarOperatorMap
+                    .computeIfAbsent(Pair.create(scanOperator, isCompensatePartition), x -> {
+                        return isCompensatePartition ? getCompensatePartitionPredicates(columnRefFactory, scanOperator) :
+                                getScanOpPrunedPartitionPredicates(scanOperator);
+                    });
             if (partitionPredicate == null) {
                 return null;
             }
@@ -1029,6 +1152,20 @@ public class MvUtils {
         }
         return partitionPredicates.isEmpty() ? ConstantOperator.createBoolean(true) :
                 Utils.compoundAnd(partitionPredicates);
+    }
+
+    private static List<ScalarOperator> getCompensatePartitionPredicates(ColumnRefFactory columnRefFactory,
+                                                                         LogicalScanOperator scanOperator) {
+        List<ScalarOperator> partitionPredicate = null;
+        if (scanOperator instanceof LogicalOlapScanOperator) {
+            partitionPredicate = compensatePartitionPredicateForOlapScan((LogicalOlapScanOperator) scanOperator,
+                    columnRefFactory);
+        } else if (scanOperator instanceof LogicalHiveScanOperator) {
+            partitionPredicate = compensatePartitionPredicateForHiveScan((LogicalHiveScanOperator) scanOperator);
+        } else {
+            return null;
+        }
+        return partitionPredicate;
     }
 
     /**
@@ -1041,12 +1178,12 @@ public class MvUtils {
      * @param mvContext : materialized view context
      * @return
      */
-    public static boolean isNeedCompensatePartitionPredicate(OptExpression plan,
-                                                             MaterializationContext mvContext) {
+    public static Optional<Boolean> isNeedCompensatePartitionPredicate(OptExpression plan,
+                                                                       MaterializationContext mvContext) {
         Set<String> mvPartitionNameToRefresh = mvContext.getMvPartitionNamesToRefresh();
         // If mv contains no partitions to refresh, no need compensate
         if (Objects.isNull(mvPartitionNameToRefresh) || mvPartitionNameToRefresh.isEmpty()) {
-            return false;
+            return Optional.of(false);
         }
 
         // If ref table contains no partitions to refresh, no need compensate.
@@ -1054,29 +1191,31 @@ public class MvUtils {
         // it can not be a candidate.
         Set<String> refTablePartitionNameToRefresh = mvContext.getRefTableUpdatePartitionNames();
         if (Objects.isNull(refTablePartitionNameToRefresh) || refTablePartitionNameToRefresh.isEmpty()) {
-            return false;
+            // NOTE: This should not happen: `mvPartitionNameToRefresh` is not empty, so `refTablePartitionNameToRefresh`
+            // should not empty. Return true in the situation to avoid bad cases.
+            return Optional.of(true);
         }
 
         List<LogicalScanOperator> scanOperators = MvUtils.getScanOperator(plan);
         // If no scan operator, no need compensate
         if (scanOperators.isEmpty()) {
-            return false;
+            return Optional.of(false);
         }
         if (scanOperators.stream().anyMatch(scan -> scan instanceof LogicalViewScanOperator)) {
-            return true;
+            return Optional.of(true);
         }
 
         // If no partition table and columns, no need compensate
         MaterializedView mv = mvContext.getMv();
         Pair<Table, Column> partitionTableAndColumns = mv.getDirectTableAndPartitionColumn();
         if (partitionTableAndColumns == null) {
-            return false;
+            return Optional.of(false);
         }
         Table refBaseTable = partitionTableAndColumns.first;
         Optional<LogicalScanOperator> optRefScanOperator =
                 scanOperators.stream().filter(x -> isRefBaseTable(x, refBaseTable)).findFirst();
         if (!optRefScanOperator.isPresent()) {
-            return false;
+            return Optional.empty();
         }
 
         LogicalScanOperator scanOperator = optRefScanOperator.get();
@@ -1085,45 +1224,45 @@ public class MvUtils {
             OlapTable olapTable = (OlapTable) olapScanOperator.getTable();
             // If table's not partitioned, no need compensate
             if (olapTable.getPartitionInfo() instanceof SinglePartitionInfo) {
-                return false;
+                return Optional.of(false);
             }
 
             List<Long> selectPartitionIds = olapScanOperator.getSelectedPartitionId();
             if (Objects.isNull(selectPartitionIds) || selectPartitionIds.size() == 0) {
-                return false;
+                return Optional.of(false);
             }
 
             // determine whether query's partitions can be satisfied by materialized view.
             for (Long selectPartitionId : selectPartitionIds) {
                 Partition partition = olapTable.getPartition(selectPartitionId);
                 if (partition != null && refTablePartitionNameToRefresh.contains(partition.getName())) {
-                    return true;
+                    return Optional.of(true);
                 }
             }
-            return false;
+            return Optional.of(false);
         } else if (scanOperator instanceof LogicalHiveScanOperator) {
             HiveTable hiveTable = (HiveTable) scanOperator.getTable();
             // If table's not partitioned, no need compensate
             if (hiveTable.isUnPartitioned()) {
-                return false;
+                return Optional.of(false);
             }
             LogicalHiveScanOperator hiveScanOperator = (LogicalHiveScanOperator)  scanOperator;
             ScanOperatorPredicates scanOperatorPredicates = hiveScanOperator.getScanOperatorPredicates();
             Collection<Long> selectPartitionIds = scanOperatorPredicates.getSelectedPartitionIds();
             if (Objects.isNull(selectPartitionIds) || selectPartitionIds.size() == 0) {
-                return false;
+                return Optional.of(false);
             }
             // determine whether query's partitions can be satisfied by materialized view.
             List<PartitionKey> selectPartitionKeys = scanOperatorPredicates.getSelectedPartitionKeys();
             for (PartitionKey partitionKey : selectPartitionKeys) {
                 String mvPartitionName = PartitionUtil.generateMVPartitionName(partitionKey);
                 if (refTablePartitionNameToRefresh.contains(mvPartitionName)) {
-                    return true;
+                    return Optional.of(true);
                 }
             }
-            return false;
+            return Optional.of(false);
         } else {
-            return true;
+            return Optional.of(true);
         }
     }
 
@@ -1135,11 +1274,7 @@ public class MvUtils {
      * @return
      */
     private static List<ScalarOperator> compensatePartitionPredicateForOlapScan(LogicalOlapScanOperator olapScanOperator,
-                                                                                ColumnRefFactory columnRefFactory,
-                                                                                boolean isCompensate) {
-        if (!isCompensate) {
-            return olapScanOperator.getPrunedPartitionPredicates();
-        }
+                                                                                ColumnRefFactory columnRefFactory) {
         List<ScalarOperator> partitionPredicates = Lists.newArrayList();
         Preconditions.checkState(olapScanOperator.getTable().isNativeTableOrMaterializedView());
         OlapTable olapTable = (OlapTable) olapScanOperator.getTable();
@@ -1159,6 +1294,7 @@ public class MvUtils {
         if (olapScanOperator.getSelectedPartitionId().isEmpty()) {
             return olapScanOperator.getPrunedPartitionPredicates();
         }
+
         if (olapTable.getPartitionInfo() instanceof ExpressionRangePartitionInfo) {
             ExpressionRangePartitionInfo partitionInfo =
                     (ExpressionRangePartitionInfo) olapTable.getPartitionInfo();
@@ -1263,6 +1399,48 @@ public class MvUtils {
             return convertPartitionKeysToPredicate(columnRefOption.get(), latestBaseTableRanges);
         }
         return null;
+    }
+
+    public static List<ScalarOperator> getMVPrunedPartitionPredicates(MaterializedView mv,
+                                                                      OptExpression mvPlan) {
+        Pair<Table, Column> partitionTableAndColumns = mv.getDirectTableAndPartitionColumn();
+        if (partitionTableAndColumns == null) {
+            return null;
+        }
+
+        Table refBaseTable = partitionTableAndColumns.first;
+        List<OptExpression> scanExprs = MvUtils.collectScanExprs(mvPlan);
+        for (OptExpression scanExpr : scanExprs) {
+            LogicalScanOperator scanOperator = (LogicalScanOperator) scanExpr.getOp();
+            if (!isRefBaseTable(scanOperator, refBaseTable)) {
+                continue;
+            }
+
+            List<ScalarOperator> prunedPredicates = getScanOpPrunedPartitionPredicates(scanOperator);
+            if (prunedPredicates == null || prunedPredicates.isEmpty()) {
+                return List.of(ConstantOperator.TRUE);
+            } else {
+                return prunedPredicates;
+            }
+        }
+        return null;
+    }
+
+    private static List<ScalarOperator> getScanOpPrunedPartitionPredicates(LogicalScanOperator scanOperator) {
+        if (scanOperator == null) {
+            return null;
+        }
+
+        if (scanOperator instanceof LogicalOlapScanOperator) {
+            return ((LogicalOlapScanOperator) scanOperator).getPrunedPartitionPredicates();
+        } else if (scanOperator instanceof LogicalHiveScanOperator) {
+            ScanOperatorPredicates scanOperatorPredicates =
+                    ((LogicalHiveScanOperator) scanOperator).getScanOperatorPredicates();
+            return scanOperatorPredicates.getPrunedPartitionConjuncts();
+        } else {
+            // Cannot decide whether it has been pruned or not, return null for now.
+            return null;
+        }
     }
 
     private static boolean isRefBaseTable(LogicalScanOperator scanOperator, Table refBaseTable) {
@@ -1574,8 +1752,9 @@ public class MvUtils {
         }
     }
 
-    public static OptExpression replaceLogicalViewScanOperator(
-            OptExpression queryExpression, List<LogicalViewScanOperator> viewScans) {
+    public static OptExpression replaceLogicalViewScanOperator(OptExpression queryExpression,
+                                                               QueryMaterializationContext queryMaterializationContext) {
+        List<LogicalViewScanOperator> viewScans = queryMaterializationContext.getViewScans();
         if (viewScans == null) {
             return queryExpression;
         }
