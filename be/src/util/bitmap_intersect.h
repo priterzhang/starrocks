@@ -143,7 +143,19 @@ public:
         return result.cardinality();
     }
 
+    BitmapValue intersect() const {
+		BitmapValue result;
+        auto it = _bitmaps.begin();
+        result |= it->second;
+        it++;
+        for (; it != _bitmaps.end(); it++) {
+            result &= it->second;
+        }
+        return result;
+    }
+
     // the serialize size
+
     size_t size() {
         size_t size = 4;
         for (auto& kv : _bitmaps) {
@@ -178,8 +190,17 @@ public:
         }
     }
 
+	BitmapValue get_bitmap(T key){
+		if (_bitmaps.find(key) != _bitmaps.end()) {
+			return _bitmaps[key];
+		}
+		BitmapValue bm;
+		return bm;
+	}
+
 private:
     std::map<T, BitmapValue> _bitmaps;
+	T head_key;
 };
 
 } // namespace starrocks

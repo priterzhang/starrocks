@@ -280,6 +280,7 @@ None
 1,2
 1,2
 -- !result
+
 -- name: test_subdivide_bitmap
 CREATE TABLE `t1` (
   `c1` int(11) NULL COMMENT "",
