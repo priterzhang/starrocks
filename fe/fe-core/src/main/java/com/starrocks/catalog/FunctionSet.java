@@ -276,7 +276,7 @@ public class FunctionSet {
     public static final String DISTINCT_PCSA = "distinct_pcsa";
     public static final String HISTOGRAM = "histogram";
 
-    // Bitmap functions:
+    // Bitmap functions:aggregate_factory.hpp
     public static final String BITMAP_AND = "bitmap_and";
     public static final String BITMAP_ANDNOT = "bitmap_andnot";
     public static final String BITMAP_CONTAINS = "bitmap_contains";
@@ -299,6 +299,12 @@ public class FunctionSet {
     public static final String BITMAP_UNION_COUNT = "bitmap_union_count";
     public static final String BITMAP_UNION_INT = "bitmap_union_int";
     public static final String INTERSECT_COUNT = "intersect_count";
+    public static final String ORTHOGONAL_BITMAP_INTERSECT = "orthogonal_bitmap_intersect";
+    public static final String ORTHOGONAL_BITMAP_DIFFERENCE = "orthogonal_bitmap_difference";
+    public static final String BITMAP_INTERSECT_COUNT_EACH_COLUMN = "bitmap_intersect_count_each_column";
+    public static final String BITMAP_DIFFERENCE_COUNT_EACH_COLUMN = "bitmap_difference_count_each_column";
+
+
     public static final String BITMAP_DICT = "bitmap_dict";
     public static final String BITMAP_FROM_BINARY = "bitmap_from_binary";
     public static final String EXCHANGE_BYTES = "exchange_bytes";
@@ -1011,6 +1017,24 @@ public class FunctionSet {
             addBuiltin(AggregateFunction.createBuiltin(INTERSECT_COUNT,
                     Lists.newArrayList(Type.BITMAP, t, t), Type.BIGINT, Type.VARCHAR, true,
                     true, false, true));
+            // orthogonal_bitmap_intersect
+            addBuiltin(AggregateFunction.createBuiltin(ORTHOGONAL_BITMAP_INTERSECT,
+                    Lists.newArrayList(Type.BITMAP, t, t), Type.BITMAP, Type.VARCHAR, true,
+                    true, false, true));
+            // orthogonal_bitmap_difference
+            addBuiltin(AggregateFunction.createBuiltin(ORTHOGONAL_BITMAP_DIFFERENCE,
+                    Lists.newArrayList(Type.BITMAP, t, t), Type.BITMAP, Type.VARCHAR, true,
+                    true, false, true));
+            // orthogonal_bitmap_intersect
+            addBuiltin(AggregateFunction.createBuiltin(BITMAP_INTERSECT_COUNT_EACH_COLUMN,
+                    Lists.newArrayList(Type.BITMAP, t, t), Type.ARRAY_BIGINT, Type.VARCHAR, true,
+                    true, false, true));
+
+            // orthogonal_bitmap_difference
+            addBuiltin(AggregateFunction.createBuiltin(BITMAP_DIFFERENCE_COUNT_EACH_COLUMN,
+                    Lists.newArrayList(Type.BITMAP, t, t), Type.ARRAY_BIGINT, Type.VARCHAR, true,
+                    true, false, true));
+
         }
 
         // MULTI_DISTINCT_COUNTM

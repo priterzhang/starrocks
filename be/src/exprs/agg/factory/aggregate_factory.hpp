@@ -40,6 +40,9 @@
 #include "exprs/agg/hll_union.h"
 #include "exprs/agg/hll_union_count.h"
 #include "exprs/agg/intersect_count.h"
+#include "exprs/agg/orthogonal_bitmap_intersect.h"
+#include "exprs/agg/orthogonal_bitmap_difference.h"
+#include "exprs/agg/bitmap_intersect_count.h"
 #include "exprs/agg/maxmin.h"
 #include "exprs/agg/maxmin_by.h"
 #include "exprs/agg/nullable_aggregate.h"
@@ -91,6 +94,20 @@ public:
 
     template <LogicalType LT>
     static AggregateFunctionPtr MakeIntersectCountAggregateFunction();
+
+	template <LogicalType LT>
+	static AggregateFunctionPtr MakeIntersectAggregateFunction();
+
+	template <LogicalType LT>
+	static AggregateFunctionPtr MakeBitmapDifferenceAggregateFunction();
+
+
+	template <LogicalType LT>
+	static AggregateFunctionPtr MakeBitmapIntersectCountEachColumnAggregateFunction();
+
+	template <LogicalType LT>
+	static AggregateFunctionPtr MakeBitmapDifferenceCountEachColumnAggregateFunction();
+
 
     template <bool IsWindowFunc>
     static AggregateFunctionPtr MakeCountAggregateFunction();
@@ -251,6 +268,28 @@ template <LogicalType LT>
 AggregateFunctionPtr AggregateFactory::MakeIntersectCountAggregateFunction() {
     return std::make_shared<IntersectCountAggregateFunction<LT>>();
 }
+
+template <LogicalType LT>
+AggregateFunctionPtr AggregateFactory::MakeIntersectAggregateFunction() {
+	return std::make_shared<IntersectAggregateFunction<LT>>();
+}
+
+template <LogicalType LT>
+AggregateFunctionPtr AggregateFactory::MakeBitmapDifferenceAggregateFunction() {
+	return std::make_shared<BitmapDifferenceAggregateFunction<LT>>();
+}
+
+template <LogicalType LT>
+AggregateFunctionPtr AggregateFactory::MakeBitmapIntersectCountEachColumnAggregateFunction() {
+	return std::make_shared<BitmapIntersectCountEachColumnAggregateFunction<LT>>();
+}
+
+
+template <LogicalType LT>
+AggregateFunctionPtr AggregateFactory::MakeBitmapDifferenceCountEachColumnAggregateFunction() {
+	return std::make_shared<BitmapDifferenceCountEachColumnAggregateFunction<LT>>();
+}
+
 
 template <bool IsWindowFunc>
 AggregateFunctionPtr AggregateFactory::MakeCountAggregateFunction() {
