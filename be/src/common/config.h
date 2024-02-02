@@ -127,7 +127,7 @@ CONF_mInt32(make_snapshot_worker_count, "5");
 // The count of thread to release snapshot.
 CONF_Int32(release_snapshot_worker_count, "5");
 // The interval time(seconds) for agent report tasks signatrue to FE.
-CONF_mInt32(report_task_interval_seconds, "10");
+CONF_mInt32(report_task_interval_seconds, "10000");
 // The interval time(seconds) for agent report disk state to FE.
 CONF_mInt32(report_disk_state_interval_seconds, "60");
 // The interval time(seconds) for agent report olap table to FE.
