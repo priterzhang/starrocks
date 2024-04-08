@@ -16,13 +16,21 @@
 
 #include "storage/persistent_index.h"
 
-namespace starrocks::lake {
+namespace starrocks {
 
+namespace lake {
+
+using KeyIndex = size_t;
+using KeyIndexSet = std::set<KeyIndex>;
 class PersistentIndexMemtable;
+class PersistentIndexSstable;
+class TabletManager;
 
+// LakePersistentIndex is not thread-safe.
+// Caller should take care of the multi-thread safety
 class LakePersistentIndex : public PersistentIndex {
 public:
-    explicit LakePersistentIndex(std::string path);
+    explicit LakePersistentIndex(TabletManager* tablet_mgr, int64_t tablet_id);
 
     ~LakePersistentIndex();
 
@@ -43,13 +51,6 @@ public:
     Status upsert(size_t n, const Slice* keys, const IndexValue* values, IndexValue* old_values,
                   IOStat* stat = nullptr) override;
 
-    // batch insert, return error if key already exists
-    // |n|: size of key/value array
-    // |keys|: key array as raw buffer
-    // |values|: value array
-    // |check_l1|: also check l1 for insertion consistency(key must not exist previously), may imply heavy IO costs
-    Status insert(size_t n, const Slice* keys, const IndexValue* values, bool check_l1) override;
-
     // batch erase
     // |n|: size of key/value array
     // |keys|: key array as raw buffer
@@ -65,13 +66,51 @@ public:
     Status try_replace(size_t n, const Slice* keys, const IndexValue* values, const uint32_t max_src_rssid,
                        std::vector<uint32_t>* failed) override;
 
+    // batch insert, return error if key already exists
+    // |n|: size of key/value array
+    // |keys|: key array as raw buffer
+    // |values|: value array
+    // |version|: version of values
+    Status insert(size_t n, const Slice* keys, const IndexValue* values, int64_t version);
+
     Status minor_compact();
 
     Status major_compact(int64_t min_retain_version);
 
 private:
+    Status flush_memtable();
+
+    bool is_memtable_full() const;
+
+    // batch get
+    // |keys|: key array as raw buffer
+    // |values|: value array
+    // |key_indexes|: the indexes of keys.
+    // |found_key_indexes|: founded indexes of keys
+    // |version|: version of values
+    Status get_from_immutable_memtable(const Slice* keys, IndexValue* values, const KeyIndexSet& key_indexes,
+                                       KeyIndexSet* found_key_indexes, int64_t version) const;
+
+    // batch get
+    // |n|: size of key/value array
+    // |keys|: key array as raw buffer
+    // |values|: value array
+    // |key_indexes|: the indexes of keys. If a key is found, its index will be erased.
+    // |version|: version of values
+    Status get_from_sstables(size_t n, const Slice* keys, IndexValue* values, KeyIndexSet* key_indexes,
+                             int64_t version) const;
+
+    static void set_difference(KeyIndexSet* key_indexes, const KeyIndexSet& found_key_indexes);
+
+private:
     std::unique_ptr<PersistentIndexMemtable> _memtable;
-    std::unique_ptr<PersistentIndexMemtable> _immutable_memtable;
+    std::unique_ptr<PersistentIndexMemtable> _immutable_memtable{nullptr};
+    TabletManager* _tablet_mgr{nullptr};
+    int64_t _tablet_id{0};
+    // The size of sstables is not expected to be too large.
+    // In major compaction, some sstables will be picked to be merged into one.
+    std::vector<std::unique_ptr<PersistentIndexSstable>> _sstables;
 };
 
-} // namespace starrocks::lake
+} // namespace lake
+} // namespace starrocks

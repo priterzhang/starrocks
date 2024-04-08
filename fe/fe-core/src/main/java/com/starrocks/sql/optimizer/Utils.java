@@ -40,6 +40,7 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalIcebergScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalJoinOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalScanOperator;
+import com.starrocks.sql.optimizer.operator.logical.LogicalTreeAnchorOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalHashAggregateOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.scalar.BinaryPredicateOperator;
@@ -52,8 +53,8 @@ import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rewrite.ReplaceColumnRefRewriter;
 import com.starrocks.sql.optimizer.rewrite.ScalarOperatorRewriter;
 import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
-import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.collections.MapUtils;
+import com.starrocks.sql.optimizer.statistics.StatisticsCalculator;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.SetUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -715,17 +716,26 @@ public class Utils {
             aggs = ((PhysicalHashAggregateOperator) inputOp).getAggregations();
         }
 
-        if (MapUtils.isEmpty(aggs)) {
-            return false;
-        } else {
-            // Must do multiple stage aggregate when aggregate distinct function has array type
-            // Must generate three, four phase aggregate for distinct aggregate with multi columns
-            return aggs.values().stream().anyMatch(callOperator -> callOperator.isDistinct()
-                    && (callOperator.getChildren().size() > 1 ||
-                    callOperator.getChildren().stream().anyMatch(c -> c.getType().isComplexType())));
+        for (CallOperator callOperator : aggs.values()) {
+            if (callOperator.isDistinct()) {
+                String fnName = callOperator.getFnName();
+                List<ScalarOperator> children = callOperator.getChildren();
+                if (children.size() > 1 || children.stream().anyMatch(c -> c.getType().isComplexType())) {
+                    return true;
+                }
+                if (FunctionSet.GROUP_CONCAT.equalsIgnoreCase(fnName) || FunctionSet.AVG.equalsIgnoreCase(fnName)) {
+                    return true;
+                } else if (FunctionSet.ARRAY_AGG.equalsIgnoreCase(fnName))  {
+                    if (children.size() > 1 || children.get(0).getType().isDecimalOfAnyVersion()) {
+                        return true;
+                    }
+                }
+            }
         }
+        return false;
     }
 
+    // without distinct function, the common distinctCols is an empty list.
     public static Optional<List<ColumnRefOperator>> extractCommonDistinctCols(Collection<CallOperator> aggCallOperators) {
         Set<ColumnRefOperator> distinctChildren = Sets.newHashSet();
         for (CallOperator callOperator : aggCallOperators) {
@@ -758,5 +768,27 @@ public class Utils {
             }
         }
         return false;
+    }
+
+    public static void calculateStatistics(OptExpression expr, OptimizerContext context) {
+        for (OptExpression child : expr.getInputs()) {
+            calculateStatistics(child, context);
+        }
+        // Do not calculate statistics for LogicalTreeAnchorOperator
+        if (expr.getOp() instanceof LogicalTreeAnchorOperator) {
+            return;
+        }
+
+        ExpressionContext expressionContext = new ExpressionContext(expr);
+        StatisticsCalculator statisticsCalculator = new StatisticsCalculator(
+                expressionContext, context.getColumnRefFactory(), context);
+        try {
+            statisticsCalculator.estimatorStats();
+        } catch (Exception e) {
+            LOG.warn("Failed to calculate statistics for expression: {}", expr, e);
+            return;
+        }
+
+        expr.setStatistics(expressionContext.getStatistics());
     }
 }

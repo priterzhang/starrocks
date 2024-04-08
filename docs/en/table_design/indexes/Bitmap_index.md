@@ -28,12 +28,13 @@ You can benefit from bitmap indexes in the following aspects:
 ## Usage notes
 
 - You can create a bitmap index for a column that can be filtered by using the equal (`=`) or [NOT] IN operator.
-- You can create bitmap indexes for all columns of a Duplicate Key table or Unique Key table. For an Aggregate table or Primary Key table, you can only create bitmap indexes for key columns.
+- You can create bitmap indexes for all columns of a Primary Key table or Duplicate Key table. For an Aggregate table or Unique Key table, you can only create bitmap indexes for key columns.
 - Bitmap indexes can be created for columns of the following data types:
-    - Numeric types: TINYINT, SMALLINT, INT, BITGINT, LARGEINT, DECIMAL, and BOOLEAN.
-    - String types: CHAR, STRING, and VARCHAR.
-    - Date types: DATE and DATETIME.
-    - Other types: HLL.
+  - Numeric types: TINYINT, SMALLINT, INT, BIGINT, LARGEINT, DECIMAL, and BOOLEAN.
+  - String types: CHAR, STRING, and VARCHAR.
+  - Date types: DATE and DATETIME.
+  - Other types: HLL.
+
 - You can check whether a query uses bitmap indexes by viewing the `BitmapIndexFilterRows` field of the query's profile.
 
 ## Create a bitmap index
@@ -61,7 +62,7 @@ There are two ways to create a bitmap index for a column.
 
     | **Parameter** | **Required** | **Description**                                              |
     | ------------- | ------------ | ------------------------------------------------------------ |
-    | index_name    | Yes          | The name of the bitmap index.  The naming conventions are as follows:<ul><li>The name can contain letters, digits (0-9), and underscores (_). It must start with a letter.</li><li>The name cannot exceed 64 characters in length.</li></ul>The name of bitmap index must be unique in a table.                              |
+    | index_name    | Yes          | The name of the bitmap index. For the naming conventions, see [System limits](../../reference/System_limit.md). The name of bitmap index must be unique in a table.                |
     | column_name   | Yes          | The name of the column on which a bitmap index is created. You can specify multiple column names to create bitmap indexes for multiple columns at a time. Separate multiple columns with commas (`,`).  |
     | COMMENT       | No           | The comment of the bitmap index.                             |
 
@@ -75,7 +76,7 @@ There are two ways to create a bitmap index for a column.
 
 ## Display bitmap indexes
 
-You can view all bitmap indexes created in a table using the SHOW INDEX statement. For parameter descriptions and examples, see [SHOW INDEX](../../sql-reference/sql-statements/Administration/SHOW_INDEX.md).
+You can view all bitmap indexes created in a table using the SHOW INDEX statement. For parameter descriptions and examples, see [SHOW INDEX](../../sql-reference/sql-statements/data-manipulation/SHOW_INDEX.md).
 
 ```SQL
 SHOW { INDEX[ES] | KEY[S] } FROM [db_name.]table_name [FROM db_name];

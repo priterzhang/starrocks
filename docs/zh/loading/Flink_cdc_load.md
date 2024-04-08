@@ -25,7 +25,7 @@ displayed_sidebar: "Chinese"
 
 2. **同步数据**
 
-   Flink SQL 客户端执行导入数据的 SQL 语句（`INSERT INTO SELECT`语句），向 Flink 集群提交一个或者多个长时间运行的 Flink job。Flink集群运行 Flink job ，[Flink cdc connector](https://ververica.github.io/flink-cdc-connectors/master/content/快速上手/build-real-time-data-lake-tutorial-zh.html) 先读取数据库的历史全量数据，然后无缝切换到增量读取，并且发给 flink-starrocks-connector，最后  flink-starrocks-connector  攒微批数据同步至 StarRocks。
+   Flink SQL 客户端执行导入数据的 SQL 语句（`INSERT INTO SELECT`语句），向 Flink 集群提交一个或者多个长时间运行的 Flink job。Flink集群运行 Flink job ，[Flink cdc connector](https://ververica.github.io/flink-cdc-connectors/master/content/快速上手/build-real-time-data-lake-tutorial-zh.html) 先读取数据库的历史全量数据，然后无缝切换到增量读取，并且发给 flink-connector-starrocks，最后  flink-connector-starrocks  攒微批数据同步至 StarRocks。
 
    > **注意**
    >
@@ -39,7 +39,7 @@ displayed_sidebar: "Chinese"
 
 ### 下载并安装同步工具
 
-同步时需要使用 SMT、 Flink、Flink CDC connector、flink-starrocks-connector，下载和安装步骤如下：
+同步时需要使用 SMT、 Flink、Flink CDC connector、flink-connector-starrocks，下载和安装步骤如下：
 
 1. **下载、安装并启动 Flink 集群**。
    > 说明：下载和安装方式也可以参考 [Flink 官方文档](https://nightlies.apache.org/flink/flink-docs-release-1.13/docs/try-flink/local_installation/)。
@@ -169,7 +169,7 @@ displayed_sidebar: "Chinese"
 ## 同步库表结构
 
 1. 配置 SMT 配置文件。
-   进入 SMT 的 **conf** 目录，编辑配置文件 **config_prod.conf**。例如源 MySQL 连接信息、待同步库表的匹配规则，flink-starrocks-connector 配置信息等。
+   进入 SMT 的 **conf** 目录，编辑配置文件 **config_prod.conf**。例如源 MySQL 连接信息、待同步库表的匹配规则，flink-connector-starrocks 配置信息等。
 
     ```Bash
     [db]
@@ -225,7 +225,7 @@ displayed_sidebar: "Chinese"
 
     - `[other]` ：其他信息
         - `be_num`： StarRocks 集群的 BE 节点数（后续生成的 StarRocks 建表 SQL 文件会参考该参数，设置合理的分桶数量）。
-        - `use_decimal_v3`：是否开启 [decimalV3](../sql-reference/sql-statements/data-types/DECIMAL.md)。开启后，MySQL 小数类型的数据同步至 StarRocks 时会转换为 decimalV3。
+        - `use_decimal_v3`：是否开启 [decimalV3](../sql-reference/data-types/numeric/DECIMAL.md)。开启后，MySQL 小数类型的数据同步至 StarRocks 时会转换为 decimalV3。
         - `output_dir` ：待生成的 SQL 文件的路径。SQL 文件会用于在 StarRocks 集群创建库表， 向 Flink 集群提交 Flink job。默认为 `./result`，不建议修改。
 
 2. 执行如下命令，SMT 会读取 MySQL 中同步对象的库表结构，并且结合配置文件信息，在 **result** 目录生成 SQL 文件，用于  StarRocks 集群创建库表（**starrocks-create.all.sql**）， 用于向 Flink 集群提交同步数据的 flink job（**flink-create.all.sql**）。

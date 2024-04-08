@@ -353,7 +353,7 @@ Status ArrayColumnIterator::fetch_dict_codes_by_rowid(const rowid_t* rowids, siz
 }
 
 Status ArrayColumnIterator::decode_dict_codes(const int32_t* codes, size_t size, Column* words) {
-	return Status::NotSupported("ArrayColumn don't support local low-cardinality dict optimization");
+    return Status::NotSupported("ArrayColumn don't support local low-cardinality dict optimization");
 }
 
 } // namespace starrocks

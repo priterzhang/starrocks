@@ -182,8 +182,7 @@ Status HashJoiner::append_chunk_to_ht(const ChunkPtr& chunk) {
 
 Status HashJoiner::append_chunk_to_spill_buffer(RuntimeState* state, const ChunkPtr& chunk) {
     update_build_rows(chunk->num_rows());
-    auto io_executor = spill_channel()->io_executor();
-    RETURN_IF_ERROR(spiller()->spill(state, chunk, *io_executor, TRACKER_WITH_SPILLER_GUARD(state, spiller())));
+    RETURN_IF_ERROR(spiller()->spill(state, chunk, TRACKER_WITH_SPILLER_GUARD(state, spiller())));
     return Status::OK();
 }
 
@@ -192,8 +191,7 @@ Status HashJoiner::append_spill_task(RuntimeState* state, std::function<StatusOr
     while (!spiller()->is_full()) {
         auto chunk_st = spill_task();
         if (chunk_st.ok()) {
-            RETURN_IF_ERROR(spiller()->spill(state, chunk_st.value(), io_executor(),
-                                             TRACKER_WITH_SPILLER_GUARD(state, spiller())));
+            RETURN_IF_ERROR(spiller()->spill(state, chunk_st.value(), TRACKER_WITH_SPILLER_GUARD(state, spiller())));
         } else if (chunk_st.status().is_end_of_file()) {
             return Status::OK();
         } else {
@@ -573,6 +571,7 @@ Status HashJoiner::_create_runtime_bloom_filters(RuntimeState* state, int64_t li
         bool eq_null = _is_null_safes[expr_order];
         MutableJoinRuntimeFilterPtr filter = nullptr;
         auto multi_partitioned = rf_desc->layout().pipeline_level_multi_partitioned();
+        multi_partitioned |= rf_desc->num_colocate_partition() > 0;
         if (multi_partitioned) {
             LogicalType build_type = rf_desc->build_expr_type();
             filter = std::shared_ptr<JoinRuntimeFilter>(

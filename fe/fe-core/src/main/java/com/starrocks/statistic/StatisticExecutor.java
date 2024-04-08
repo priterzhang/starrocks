@@ -22,6 +22,7 @@ import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
+import com.starrocks.common.AuditLog;
 import com.starrocks.common.Config;
 import com.starrocks.common.Pair;
 import com.starrocks.common.Status;
@@ -128,9 +129,9 @@ public class StatisticExecutor {
         }
     }
 
-    public void dropTableStatistics(ConnectContext statsConnectCtx, String tableUUID) {
+    public void dropExternalTableStatistics(ConnectContext statsConnectCtx, String tableUUID) {
         String sql = StatisticSQLBuilder.buildDropExternalStatSQL(tableUUID);
-        LOG.debug("Expire statistic SQL: {}", sql);
+        LOG.debug("Expire external statistic SQL: {}", sql);
 
         boolean result = executeDML(statsConnectCtx, sql);
         if (!result) {
@@ -156,6 +157,11 @@ public class StatisticExecutor {
         return executeStatisticDQL(statsConnectCtx, sql);
     }
 
+    public List<TStatisticData> queryHistogram(ConnectContext statsConnectCtx, String tableUUID, List<String> columnNames) {
+        String sql = StatisticSQLBuilder.buildQueryConnectorHistogramStatisticsSQL(tableUUID, columnNames);
+        return executeStatisticDQL(statsConnectCtx, sql);
+    }
+
     public List<TStatisticData> queryMCV(ConnectContext statsConnectCtx, String sql) {
         return executeStatisticDQL(statsConnectCtx, sql);
     }
@@ -165,6 +171,14 @@ public class StatisticExecutor {
         boolean result = executeDML(statsConnectCtx, sql);
         if (!result) {
             LOG.warn("Execute statistic table expire fail.");
+        }
+    }
+
+    public void dropExternalHistogram(ConnectContext statsConnectCtx, String tableUUID, List<String> columnNames) {
+        String sql = StatisticSQLBuilder.buildDropExternalHistogramSQL(tableUUID, columnNames);
+        boolean result = executeDML(statsConnectCtx, sql);
+        if (!result) {
+            LOG.warn("Execute external histogram statistic table expire fail.");
         }
     }
 
@@ -236,7 +250,8 @@ public class StatisticExecutor {
                 || version == StatsConstants.STATISTIC_TABLE_VERSION
                 || version == StatsConstants.STATISTIC_BATCH_VERSION
                 || version == StatsConstants.STATISTIC_EXTERNAL_VERSION
-                || version == StatsConstants.STATISTIC_EXTERNAL_QUERY_VERSION) {
+                || version == StatsConstants.STATISTIC_EXTERNAL_QUERY_VERSION
+                || version == StatsConstants.STATISTIC_EXTERNAL_HISTOGRAM_VERSION) {
             TDeserializer deserializer = new TDeserializer(new TCompactProtocol.Factory());
             for (TResultBatch resultBatch : sqlResult) {
                 for (ByteBuffer bb : resultBatch.rows) {
@@ -288,14 +303,27 @@ public class StatisticExecutor {
         // update StatisticsCache
         statsConnectCtx.setStatisticsConnection(false);
         if (statsJob.getType().equals(StatsConstants.AnalyzeType.HISTOGRAM)) {
-            for (String columnName : statsJob.getColumns()) {
-                HistogramStatsMeta histogramStatsMeta = new HistogramStatsMeta(db.getId(),
-                        table.getId(), columnName, statsJob.getType(), analyzeStatus.getEndTime(),
-                        statsJob.getProperties());
-                GlobalStateMgr.getCurrentState().getAnalyzeMgr().addHistogramStatsMeta(histogramStatsMeta);
-                GlobalStateMgr.getCurrentState().getAnalyzeMgr().refreshHistogramStatisticsCache(
-                        histogramStatsMeta.getDbId(), histogramStatsMeta.getTableId(),
-                        Lists.newArrayList(histogramStatsMeta.getColumn()), refreshAsync);
+            if (table.isNativeTableOrMaterializedView()) {
+                for (String columnName : statsJob.getColumns()) {
+                    HistogramStatsMeta histogramStatsMeta = new HistogramStatsMeta(db.getId(),
+                            table.getId(), columnName, statsJob.getType(), analyzeStatus.getEndTime(),
+                            statsJob.getProperties());
+                    GlobalStateMgr.getCurrentState().getAnalyzeMgr().addHistogramStatsMeta(histogramStatsMeta);
+                    GlobalStateMgr.getCurrentState().getAnalyzeMgr().refreshHistogramStatisticsCache(
+                            histogramStatsMeta.getDbId(), histogramStatsMeta.getTableId(),
+                            Lists.newArrayList(histogramStatsMeta.getColumn()), refreshAsync);
+                }
+            } else {
+                for (String columnName : statsJob.getColumns()) {
+                    ExternalHistogramStatsMeta histogramStatsMeta = new ExternalHistogramStatsMeta(
+                            statsJob.getCatalogName(), db.getFullName(), table.getName(), columnName,
+                            statsJob.getType(), analyzeStatus.getEndTime(), statsJob.getProperties());
+
+                    GlobalStateMgr.getCurrentState().getAnalyzeMgr().addExternalHistogramStatsMeta(histogramStatsMeta);
+                    GlobalStateMgr.getCurrentState().getAnalyzeMgr().refreshConnectorTableHistogramStatisticsCache(
+                            statsJob.getCatalogName(), db.getFullName(), table.getName(),
+                            Lists.newArrayList(histogramStatsMeta.getColumn()), refreshAsync);
+                }
             }
         } else {
             if (table.isNativeTableOrMaterializedView()) {
@@ -337,6 +365,8 @@ public class StatisticExecutor {
         context.setExecutor(executor);
         context.setQueryId(UUIDUtil.genUUID());
         context.getSessionVariable().setEnableMaterializedViewRewrite(false);
+        AuditLog.getStatisticAudit().info("statistic execute query | QueryId [{}] | SQL: {}",
+                DebugUtil.printId(context.getQueryId()), sql);
         Pair<List<TResultBatch>, Status> sqlResult = executor.executeStmtWithExecPlan(context, execPlan);
         if (!sqlResult.second.ok()) {
             throw new SemanticException("Statistics query fail | Error Message [%s] | QueryId [%s] | SQL [%s]",
@@ -353,10 +383,12 @@ public class StatisticExecutor {
             StmtExecutor executor = new StmtExecutor(context, parsedStmt);
             context.setExecutor(executor);
             context.setQueryId(UUIDUtil.genUUID());
+            AuditLog.getStatisticAudit().info("statistic execute DML | QueryId [{}] | SQL: {}",
+                    DebugUtil.printId(context.getQueryId()), sql);
             executor.execute();
             return true;
         } catch (Exception e) {
-            LOG.warn("Execute statistic DML fail | {} | SQL {}", DebugUtil.printId(context.getQueryId()), sql, e);
+            LOG.warn("statistic DML fail | {} | SQL {}", DebugUtil.printId(context.getQueryId()), sql, e);
             return false;
         }
     }
