@@ -82,7 +82,12 @@ public class TaskBuilder {
         task.setDbName(submitTaskStmt.getDbName());
         task.setDefinition(submitTaskStmt.getSqlText());
         task.setProperties(submitTaskStmt.getProperties());
-        task.setExpireTime(System.currentTimeMillis() + Config.task_ttl_second * 1000L);
+        task.setCreateUser(ConnectContext.get().getCurrentUserIdentity().getUser());
+        task.setSchedule(submitTaskStmt.getSchedule());
+        task.setType(submitTaskStmt.getSchedule() != null ? Constants.TaskType.PERIODICAL : Constants.TaskType.MANUAL);
+        if (submitTaskStmt.getSchedule() == null) {
+            task.setExpireTime(System.currentTimeMillis() + Config.task_ttl_second * 1000L);
+        }
 
         handleSpecialTaskProperties(task);
         return task;
@@ -159,6 +164,9 @@ public class TaskBuilder {
         task.setDefinition(materializedView.getTaskDefinition());
         task.setPostRun(getAnalyzeMVStmt(materializedView.getName()));
         task.setExpireTime(0L);
+        if (ConnectContext.get() != null) {
+            task.setCreateUser(ConnectContext.get().getCurrentUserIdentity().getUser());
+        }
         handleSpecialTaskProperties(task);
         return task;
     }
@@ -174,6 +182,7 @@ public class TaskBuilder {
         task.setDefinition(materializedView.getTaskDefinition());
         task.setPostRun(getAnalyzeMVStmt(materializedView.getName()));
         task.setExpireTime(0L);
+        task.setCreateUser(ConnectContext.get().getCurrentUserIdentity().getUser());
         handleSpecialTaskProperties(task);
         return task;
     }

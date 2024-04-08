@@ -14,6 +14,8 @@
 
 #include "exec/spill/file_block_manager.h"
 
+#include <utility>
+
 #include "exec/spill/common.h"
 #include "fmt/format.h"
 #include "gen_cpp/Types_types.h"
@@ -24,10 +26,11 @@
 namespace starrocks::spill {
 class FileBlockContainer {
 public:
-    FileBlockContainer(Dir* dir, const TUniqueId& query_id, int32_t plan_node_id, std::string plan_node_name,
-                       uint64_t id)
-            : _dir(dir),
+    FileBlockContainer(DirPtr dir, const TUniqueId& query_id, const TUniqueId& fragment_instance_id,
+                       int32_t plan_node_id, std::string plan_node_name, uint64_t id)
+            : _dir(std::move(dir)),
               _query_id(query_id),
+              _fragment_instance_id(fragment_instance_id),
               _plan_node_id(plan_node_id),
               _plan_node_name(std::move(plan_node_name)),
               _id(id) {}
@@ -36,7 +39,7 @@ public:
         // @TODO we need add a gc thread to delete file
         TRACE_SPILL_LOG << "delete spill container file: " << path();
         WARN_IF_ERROR(_dir->fs()->delete_file(path()), fmt::format("cannot delete spill container file: {}", path()));
-        _dir->dec_size(_data_size);
+        _dir->dec_size(_acquired_data_size);
         // try to delete related dir, only the last one can success, we ignore the error
         (void)(_dir->fs()->delete_dir(parent_path()));
     }
@@ -45,7 +48,7 @@ public:
 
     Status close();
 
-    Dir* dir() const { return _dir; }
+    Dir* dir() const { return _dir.get(); }
     int32_t plan_node_id() const { return _plan_node_id; }
     std::string plan_node_name() const { return _plan_node_name; }
 
@@ -54,7 +57,8 @@ public:
         return _writable_file->size();
     }
     std::string path() const {
-        return fmt::format("{}/{}/{}-{}-{}", _dir->dir(), print_id(_query_id), _plan_node_name, _plan_node_id, _id);
+        return fmt::format("{}/{}/{}-{}-{}-{}", _dir->dir(), print_id(_query_id), print_id(_fragment_instance_id),
+                           _plan_node_name, _plan_node_id, _id);
     }
     std::string parent_path() const { return fmt::format("{}/{}", _dir->dir(), print_id(_query_id)); }
     uint64_t id() const { return _id; }
@@ -63,20 +67,33 @@ public:
 
     Status flush();
 
+    bool pre_allocate(size_t allocate_size) {
+        if (_dir->inc_size(allocate_size)) {
+            _acquired_data_size += allocate_size;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
     StatusOr<std::unique_ptr<io::InputStreamWrapper>> get_readable();
 
-    static StatusOr<FileBlockContainerPtr> create(Dir* dir, TUniqueId query_id, int32_t plan_node_id,
-                                                  const std::string& plan_node_name, uint64_t id);
+    static StatusOr<FileBlockContainerPtr> create(DirPtr dir, TUniqueId query_id, TUniqueId fragment_instance_id,
+                                                  int32_t plan_node_id, const std::string& plan_node_name, uint64_t id);
 
 private:
-    Dir* _dir;
+    DirPtr _dir;
     TUniqueId _query_id;
+    TUniqueId _fragment_instance_id;
     int32_t _plan_node_id;
     std::string _plan_node_name;
     uint64_t _id;
     std::unique_ptr<WritableFile> _writable_file;
     bool _has_open = false;
+    // data size in this container
     size_t _data_size = 0;
+    // acquired data size from Dir
+    size_t _acquired_data_size = 0;
 };
 
 Status FileBlockContainer::open() {
@@ -113,24 +130,27 @@ StatusOr<std::unique_ptr<io::InputStreamWrapper>> FileBlockContainer::get_readab
     return f;
 }
 
-StatusOr<FileBlockContainerPtr> FileBlockContainer::create(Dir* dir, TUniqueId query_id, int32_t plan_node_id,
+StatusOr<FileBlockContainerPtr> FileBlockContainer::create(DirPtr dir, TUniqueId query_id,
+                                                           TUniqueId fragment_instance_id, int32_t plan_node_id,
                                                            const std::string& plan_node_name, uint64_t id) {
-    auto container = std::make_shared<FileBlockContainer>(dir, query_id, plan_node_id, plan_node_name, id);
+    auto container =
+            std::make_shared<FileBlockContainer>(dir, query_id, fragment_instance_id, plan_node_id, plan_node_name, id);
     RETURN_IF_ERROR(container->open());
     return container;
 }
 
 class FileBlockReader final : public BlockReader {
 public:
-    FileBlockReader(const Block* block) : _block(block), _length(block->size()) {}
+    FileBlockReader(const Block* block) : BlockReader(block), _length(block->size()) {}
     ~FileBlockReader() override = default;
 
     Status read_fully(void* data, int64_t count) override;
 
     std::string debug_string() override { return _block->debug_string(); }
 
+    const Block* block() const override { return _block; }
+
 private:
-    const Block* _block = nullptr;
     std::unique_ptr<io::InputStreamWrapper> _readable;
     size_t _length = 0;
     size_t _offset = 0;
@@ -165,6 +185,8 @@ public:
         return fmt::format("FileBlock[container={}]", _container->path());
 #endif
     }
+
+    bool preallocate(size_t write_size) override { return _container->pre_allocate(write_size); }
 
 private:
     FileBlockContainerPtr _container;
@@ -207,8 +229,11 @@ StatusOr<BlockPtr> FileBlockManager::acquire_block(const AcquireBlockOptions& op
     AcquireDirOptions acquire_dir_opts;
     acquire_dir_opts.data_size = opts.block_size;
     ASSIGN_OR_RETURN(auto dir, _dir_mgr->acquire_writable_dir(acquire_dir_opts));
-    ASSIGN_OR_RETURN(auto block_container, get_or_create_container(dir, opts.plan_node_id, opts.name));
-    return std::make_shared<FileBlock>(block_container);
+    ASSIGN_OR_RETURN(auto block_container,
+                     get_or_create_container(dir, opts.fragment_instance_id, opts.plan_node_id, opts.name));
+    auto res = std::make_shared<FileBlock>(block_container);
+    res->set_is_remote(dir->is_remote());
+    return res;
 }
 
 Status FileBlockManager::release_block(const BlockPtr& block) {
@@ -220,15 +245,16 @@ Status FileBlockManager::release_block(const BlockPtr& block) {
     return Status::OK();
 }
 
-StatusOr<FileBlockContainerPtr> FileBlockManager::get_or_create_container(Dir* dir, int32_t plan_node_id,
+StatusOr<FileBlockContainerPtr> FileBlockManager::get_or_create_container(DirPtr dir, TUniqueId fragment_instance_id,
+                                                                          int32_t plan_node_id,
                                                                           const std::string& plan_node_name) {
     TRACE_SPILL_LOG << "get_or_create_container at dir: " << dir->dir() << ", plan node:" << plan_node_id << ", "
                     << plan_node_name;
     uint64_t id = _next_container_id++;
     std::string container_dir = dir->dir() + "/" + print_id(_query_id);
     RETURN_IF_ERROR(dir->fs()->create_dir_if_missing(container_dir));
-    ASSIGN_OR_RETURN(auto block_container,
-                     FileBlockContainer::create(dir, _query_id, plan_node_id, plan_node_name, id));
+    ASSIGN_OR_RETURN(auto block_container, FileBlockContainer::create(dir, _query_id, fragment_instance_id,
+                                                                      plan_node_id, plan_node_name, id));
     RETURN_IF_ERROR(block_container->open());
     return block_container;
 }

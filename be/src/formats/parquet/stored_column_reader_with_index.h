@@ -26,16 +26,13 @@ public:
             : _inner_reader(std::move(reader)), _offset_index_ctx(offset_index_ctx), _has_dict_page(has_dict_page) {
         _page_num = _offset_index_ctx->page_selected.size();
         _inner_reader->set_page_num(_page_num);
+        _inner_reader->set_page_change_on_record_boundry();
     }
 
     ~StoredColumnReaderWithIndex() = default;
 
     void set_need_parse_levels(bool need_parse_levels) override {
         _inner_reader->set_need_parse_levels(need_parse_levels);
-    }
-
-    Status read_records(size_t* num_rows, ColumnContentType content_type, Column* dst) override {
-        return _inner_reader->read_records(num_rows, content_type, dst);
     }
 
     Status read_range(const Range<uint64_t>& range, const Filter* filter, ColumnContentType content_type,

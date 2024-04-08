@@ -217,10 +217,11 @@ public:
         if (!jit_engine->support_jit()) {
             return;
         }
-
+        DCHECK(runtime_state != nullptr);
+        runtime_state->set_jit_level(-1);
         ObjectPool pool;
         auto* jit_expr = JITExpr::create(&pool, expr);
-
+        jit_expr->set_uncompilable_children(runtime_state);
         ExprContext exprContext(jit_expr);
         std::vector<ExprContext*> expr_ctxs = {&exprContext};
 
@@ -228,9 +229,7 @@ public:
         ASSERT_OK(Expr::open(expr_ctxs, runtime_state));
         ASSERT_TRUE(jit_expr->is_jit_compiled());
 
-        Chunk chunk;
-        chunk.append_column(ptr, 0);
-        ptr = jit_expr->evaluate(&exprContext, &chunk);
+        ptr = jit_expr->evaluate(&exprContext, nullptr);
         // Verify the result after JIT.
         test_func(ptr);
 
@@ -242,9 +241,11 @@ public:
         if (!jit_engine->support_jit()) {
             return;
         }
-
+        DCHECK(runtime_state != nullptr);
+        runtime_state->set_jit_level(-1);
         ObjectPool pool;
         auto* jit_expr = JITExpr::create(&pool, expr);
+        jit_expr->set_uncompilable_children(runtime_state);
         ExprContext exprContext(jit_expr);
         std::vector<ExprContext*> expr_ctxs = {&exprContext};
 

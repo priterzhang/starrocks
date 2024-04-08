@@ -79,7 +79,7 @@ SELECT select_expr[, select_expr ...]
 
 - WHERE (optional)
 
-  From v3.2 onwards, synchronous materialized views support the WHERE clause which can filter rows used for the materialized view.
+  From v3.1.8 onwards, synchronous materialized views support the WHERE clause which can filter rows used for the materialized view.
 
 - GROUP BY (optional)
 
@@ -110,7 +110,7 @@ SELECT * FROM <mv_name> [_SYNC_MV_];
 
 ### Automatic query rewrite with synchronous materialized view
 
-When a query that follows the pattern of a synchronous materialized view is executed, the original query statement is automatically rewritten and the intermediate results stored in the materialized view are used. 
+When a query that follows the pattern of a synchronous materialized view is executed, the original query statement is automatically rewritten and the intermediate results stored in the materialized view are used.
 
 The following table shows the correspondence between the aggregate function in the original query and the aggregate function used to construct the materialized view. You can select the corresponding aggregate function to build a materialized view according to your business scenario.
 
@@ -223,7 +223,7 @@ The refresh moment of the materialized view. Default value: `IMMEDIATE`. Valid v
 The refresh strategy of the asynchronous materialized view. Valid values:
 
 - `ASYNC`: Automatic refresh mode. Each time the base table data changes, the materialized view is automatically refreshed.
-- `ASYNC [START (<start_time>)] EVERY(INTERVAL <interval>) `: Regular refresh mode. The materialized view is refreshed regularly at the interval defined. You can specify the interval as `EVERY (interval n day/hour/minute/second)` using the following units: `DAY`, `HOUR`, `MINUTE`, and `SECOND`. The default value is `10 MINUTE`. You can further specify the refresh start time as `START('yyyy-MM-dd hh:mm:ss')`. If the start time is not specified, the current time is used. Example: `ASYNC START ('2023-09-12 16:30:25') EVERY (INTERVAL 5 MINUTE)`.
+- `ASYNC [START (<start_time>)] EVERY(INTERVAL <interval>)`: Regular refresh mode. The materialized view is refreshed regularly at the interval defined. You can specify the interval as `EVERY (interval n day/hour/minute/second)` using the following units: `DAY`, `HOUR`, `MINUTE`, and `SECOND`. The default value is `10 MINUTE`. You can further specify the refresh start time as `START('yyyy-MM-dd hh:mm:ss')`. If the start time is not specified, the current time is used. Example: `ASYNC START ('2023-09-12 16:30:25') EVERY (INTERVAL 5 MINUTE)`.
 - `MANUAL`: Manual refresh mode. The materialized view will not be refreshed unless you trigger a refresh task manually.
 
 If this parameter is not specified, the default value `MANUAL` is used.
@@ -265,13 +265,14 @@ Properties of the asynchronous materialized view. You can modify the properties 
 - `mv_rewrite_staleness_second`: If the materialized view's last refresh is within the time interval specified in this property, this materialized view can be used directly for query rewrite, regardless of whether the data in the base tables changes. If the last refresh is before this time interval, StarRocks checks whether the base tables have been updated to determine whether the materialized view can be used for query rewrite. Unit: Second. This property is supported from v3.0.
 - `colocate_with`: The colocation group of the asynchronous materialized view. See [Colocate Join](../../../using_starrocks/Colocate_join.md) for further information. This property is supported from v3.0.
 - `unique_constraints` and `foreign_key_constraints`: The Unique Key constraints and Foreign Key constraints when you create an asynchronous materialized view for query rewrite in the View Delta Join scenario. See [Asynchronous materialized view - Rewrite queries in View Delta Join scenario](../../../using_starrocks/query_rewrite_with_materialized_views.md) for further information. This property is supported from v3.0.
-- `resource_group`: The resource group to which the refresh tasks of the materialized view belong. For more about resource groups see [Resource group](../../../administration/resource_group.md).
+- `resource_group`: The resource group to which the refresh tasks of the materialized view belong. For more about resource groups see [Resource group](../../../administration/management/resource_management/resource_group.md).
 - `query_rewrite_consistency`: The query rewrite rule for the asynchronous materialized views. This property is supported from v3.2. Valid values:
   - `disable`: Disable automatic query rewrite of the asynchronous materialized view.
   - `checked` (Default value): Enable automatic query rewrite only when the materialized view meets the timeliness requirement, which means:
     - If `mv_rewrite_staleness_second` is not specified, the materialized view can be used for query rewrite only when its data is consistent with the data in all base tables.
     - If `mv_rewrite_staleness_second` is specified, the materialized view can be used for query rewrite when its last refresh is within the staleness time interval.
   - `loose`: Enable automatic query rewrite directly, and no consistency check is required.
+- `storage_volume`: The name of the storage volume used to store the asynchronous materialized view you want to create if you are using a [shared-data cluster](../../../deployment/shared_data/shared_data.mdx). This property is supported from v3.1 onwards. If this property is not specified, the default storage volume is used. Example: `"storage_volume" = "def_volume"`.
 - `force_external_table_query_rewrite`: Whether to enable query rewrite for external catalog-based materialized views. This property is supported from v3.2. Valid values:
   - `true`: Enable query rewrite for external catalog-based materialized views.
   - `false` (Default value): Disable query rewrite for external catalog-based materialized views.

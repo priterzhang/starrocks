@@ -20,6 +20,7 @@
 #include "column/vectorized_fwd.h"
 #include "common/status.h"
 #include "exec/spill/block_manager.h"
+#include "exec/spill/data_stream.h"
 #include "exec/spill/executor.h"
 #include "exec/spill/input_stream.h"
 #include "exec/spill/mem_table.h"
@@ -49,11 +50,11 @@ public:
         _stream = std::move(stream);
     }
 
-    template <class TaskExecutor, class MemGuard>
-    StatusOr<ChunkPtr> restore(RuntimeState* state, TaskExecutor&& executor, MemGuard&& guard);
+    template <class TaskExecutor = spill::IOTaskExecutor, class MemGuard>
+    StatusOr<ChunkPtr> restore(RuntimeState* state, MemGuard&& guard);
 
-    template <class TaskExecutor, class MemGuard>
-    [[nodiscard]] Status trigger_restore(RuntimeState* state, TaskExecutor&& executor, MemGuard&& guard);
+    template <class TaskExecutor = spill::IOTaskExecutor, class MemGuard>
+    Status trigger_restore(RuntimeState* state, MemGuard&& guard);
 
     bool has_output_data() { return _stream && _stream->is_ready(); }
 
@@ -147,10 +148,10 @@ public:
     }
 
     template <class TaskExecutor, class MemGuard>
-    Status spill(RuntimeState* state, const ChunkPtr& chunk, TaskExecutor&& executor, MemGuard&& guard);
+    Status spill(RuntimeState* state, const ChunkPtr& chunk, MemGuard&& guard);
 
     template <class TaskExecutor, class MemGuard>
-    Status flush(RuntimeState* state, TaskExecutor&& executor, MemGuard&& guard);
+    Status flush(RuntimeState* state, MemGuard&& guard);
 
     void prepare(RuntimeState* state) override;
 
@@ -162,9 +163,8 @@ public:
 
     const auto& mem_table() const { return _mem_table; }
 
-    BlockPtr& block() { return _block; }
-
-    void reset_block() { _block = nullptr; }
+    SpillOutputDataStreamPtr& output_stream() { return _output_stream; }
+    void reset_output_stream() { _output_stream = nullptr; }
 
     BlockGroup& block_group() { return _block_group; }
 
@@ -179,20 +179,14 @@ public:
     Status yieldable_flush_task(workgroup::YieldContext& ctx, RuntimeState* state, const MemTablePtr& mem_table);
 
 public:
-    struct FlushContext {
-        BlockPtr block;
+    struct FlushContext : public SpillIOTaskContext {
+        std::shared_ptr<SpillOutputDataStream> output;
     };
     using FlushContextPtr = std::shared_ptr<FlushContext>;
 
 private:
-    template <class Provider>
-    StatusOr<BlockPtr> get_block_from_ctx(Provider&& provider) {
-        return provider();
-    }
-
-private:
     BlockGroup _block_group;
-    BlockPtr _block;
+    SpillOutputDataStreamPtr _output_stream;
     MemTablePtr _mem_table;
     std::queue<MemTablePtr> _mem_table_pool;
     std::mutex _mutex;
@@ -241,13 +235,13 @@ public:
     }
 
     template <class TaskExecutor, class MemGuard>
-    Status spill(RuntimeState* state, const ChunkPtr& chunk, TaskExecutor&& executor, MemGuard&& guard);
+    Status spill(RuntimeState* state, const ChunkPtr& chunk, MemGuard&& guard);
 
     template <class TaskExecutor, class MemGuard>
-    Status flush(RuntimeState* state, bool is_final_flush, TaskExecutor&& executor, MemGuard&& guard);
+    Status flush(RuntimeState* state, bool is_final_flush, MemGuard&& guard);
 
     template <class TaskExecutor, class MemGuard>
-    Status flush_if_full(RuntimeState* state, TaskExecutor&& executor, MemGuard&& guard);
+    Status flush_if_full(RuntimeState* state, MemGuard&& guard);
 
     void get_spill_partitions(std::vector<const SpillPartitionInfo*>* partitions) override;
 
@@ -298,7 +292,7 @@ public:
     int64_t mem_consumption() const { return _mem_tracker->consumption(); }
 
 public:
-    struct PartitionedFlushContext {
+    struct PartitionedFlushContext : public SpillIOTaskContext {
         // used in spill stage
         struct SpillStageContext {
             size_t processing_idx{};

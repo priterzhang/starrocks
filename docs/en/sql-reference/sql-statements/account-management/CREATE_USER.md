@@ -22,6 +22,8 @@ CREATE USER <user_identity> [auth_option] [DEFAULT ROLE <role_name>[, <role_name
 
 - `user_identity` consists of two parts, "user_name" and "host", in the format of `username@'userhost'`.  For the "host" part, you can use `%` for fuzzy match. If "host" is not specified, "%" is used by default, meaning that the user can connect to StarRocks from any host.
 
+  For the naming conventions of usernames, see [System limits](../../../reference/System_limit.md).
+
 - `auth_option` specifies the authentication method. Currently, three authentication methods are supported: StarRocks native password, mysql_native_password, and "authentication_ldap_simple". StarRocks native password is the same as mysql_native_password in logic but slightly differs in syntax. One user identity can use only one authentication method.
 
     ```SQL
@@ -59,7 +61,7 @@ Example 2: Create a user using a plaintext password and allow the user to log in
 CREATE USER jack@'172.10.1.10' IDENTIFIED WITH mysql_native_password BY '123456';
 ```
 
-Example 3: Create a user with a cyphertext password and allow the user to log in from  `'172.10.1.10'`.
+Example 3: Create a user with a ciphertext password and allow the user to log in from  `'172.10.1.10'`.
 
 ```SQL
 CREATE USER jack@'172.10.1.10' IDENTIFIED BY PASSWORD '*6BB4837EB74329105EE4568DDA7DC67ED2CA2AD9';

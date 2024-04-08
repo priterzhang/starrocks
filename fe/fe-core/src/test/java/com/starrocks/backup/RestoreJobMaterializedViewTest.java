@@ -443,16 +443,6 @@ public class RestoreJobMaterializedViewTest {
     @Test
     @Order(1)
     public void testMVRestore_TestOneTable1() {
-        new Expectations() {
-            {
-                globalStateMgr.getCurrentState().getCatalogMgr().catalogExists("default_catalog");
-                result = true;
-
-                globalStateMgr.getCurrentState().getMetadataMgr().getDb("default_catalog", DB_NAME);
-                minTimes = 0;
-                result = db;
-            }
-        };
         RestoreJob job = createRestoreJob(ImmutableList.of(UnitTestUtil.MATERIALIZED_VIEW_NAME));
         checkJobRun(job);
         assertMVActiveEquals(MATERIALIZED_VIEW_NAME, true);
@@ -503,20 +493,6 @@ public class RestoreJobMaterializedViewTest {
     @Test
     @Order(6)
     public void testMVRestore_TestMVWithBaseTable4() {
-        new Expectations() {
-            {
-                globalStateMgr.getCurrentState().getCatalogMgr().catalogExists("default_catalog");
-                result = true;
-
-                globalStateMgr.getCurrentState().getMetadataMgr().getDb("default_catalog", DB_NAME);
-                minTimes = 0;
-                result = db;
-
-                globalStateMgr.getCurrentState().getDb(DB_NAME);
-                minTimes = 0;
-                result = db;
-            }
-        };
         new MockUp<MetadataMgr>() {
             @Mock
             public Table getTable(String catalogName, String dbName, String tblName) {
