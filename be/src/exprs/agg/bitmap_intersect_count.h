@@ -55,7 +55,7 @@ namespace starrocks {
 						intersect.add_key(key);
 					}
 
-					LOG(INFO) << "thread id:" << syscall(186) << " add key to intersect arg key[" << arg_value << "]";
+//					LOG(INFO) << "thread id:" << syscall(186) << " add key to intersect arg key[" << arg_value << "]";
 				}
 				this->data(state).initial = true;
 			}
@@ -76,7 +76,7 @@ namespace starrocks {
 				intersect.update(key, bimtap_value);
 			}
 
-			LOG(INFO) << "thread id:" << syscall(186) << " update key value to intersect arg key[" << key_value << "] bitmap value[" << bimtap_value.cardinality();
+//			LOG(INFO) << "thread id:" << syscall(186) << " update key value to intersect arg key[" << key_value << "] bitmap value[" << bimtap_value.cardinality();
 		}
 
 		void merge(FunctionContext* ctx, const Column* column, AggDataPtr __restrict state, size_t row_num) const override {
@@ -213,7 +213,7 @@ namespace starrocks {
 
 				datum.set(bc.cardinality());
 				vdatum.push_back(datum);
-				LOG(INFO) << "thread id:" << syscall(186) << " head key[" << head_arg_value << "] arg key[" << arg_value << "] intersect bitmap count cardinality" << bc.cardinality();
+//				LOG(INFO) << "thread id:" << syscall(186) << " head key[" << head_arg_value << "] arg key[" << arg_value << "] intersect bitmap count cardinality" << bc.cardinality();
 			}
 
 			Datum d;
