@@ -33,6 +33,12 @@ struct HLLUnionBuilder {
             resolver->add_aggregate_mapping_variadic<lt, TYPE_BIGINT, IntersectCountState>(
                     "intersect_count", false, AggregateFactory::MakeIntersectCountAggregateFunction<lt>());
 
+			resolver->add_aggregate_mapping_variadic<lt, TYPE_OBJECT, IntersectCountState>(
+				"orthogonal_bitmap_intersect", false, AggregateFactory::MakeIntersectAggregateFunction<lt>());
+
+			resolver->add_aggregate_mapping_variadic<lt, TYPE_OBJECT, IntersectCountState>(
+				"orthogonal_bitmap_difference", false, AggregateFactory::MakeBitmapDifferenceAggregateFunction<lt>());
+
             resolver->add_aggregate_mapping<lt, TYPE_BIGINT, HyperLogLog>(
                     "ndv", false, AggregateFactory::MakeHllNdvAggregateFunction<lt>());
 
@@ -41,6 +47,13 @@ struct HLLUnionBuilder {
 
             resolver->add_aggregate_mapping_variadic<lt, TYPE_BIGINT, HLLSketchState>(
                     "ds_hll_count_distinct", false, AggregateFactory::MakeHllSketchAggregateFunction<lt>());
+
+			resolver->add_aggregate_mapping_variadic<lt, TYPE_ARRAY, IntersectCountState>(
+				"bitmap_intersect_count_each_column", false, AggregateFactory::MakeBitmapIntersectCountEachColumnAggregateFunction<lt>());
+
+			resolver->add_aggregate_mapping_variadic<lt, TYPE_ARRAY, IntersectCountState>(
+				"bitmap_difference_count_each_column", false, AggregateFactory::MakeBitmapDifferenceCountEachColumnAggregateFunction<lt>());
+
         }
     }
 };
