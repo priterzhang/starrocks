@@ -181,7 +181,8 @@ const AggregateFunction* get_aggregate_function(const std::string& agg_func_name
         // Because intersect_count have two input types.
         // And intersect_count's first argument's type is alwasy Bitmap,
         // so we use its second arguments type as input.
-        if (agg_func_name == "intersect_count") {
+        if (agg_func_name == "intersect_count" || agg_func_name == "orthogonal_bitmap_intersect" || agg_func_name == "orthogonal_bitmap_difference"
+            || agg_func_name == "bitmap_intersect_count_each_column" || agg_func_name == "bitmap_difference_count_each_column") {
             arg_type = arg_types[1];
         }
 
